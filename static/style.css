@@ -1,0 +1,71 @@
+:root {
+  --bg: #f5f7fb; --card: #fff; --ink: #0f172a; --muted: #64748b;
+  --primary: #1e40af; --ok: #16a34a; --err: #dc2626; --border: #e2e8f0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+}
+a { color: var(--primary); text-decoration: none; }
+
+/* --- Авторизация --- */
+.login-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.login-box {
+  width: 100%; max-width: 380px; background: var(--card); border-radius: 16px; padding: 28px 24px;
+  box-shadow: 0 10px 30px rgba(15,23,42,0.08); text-align: center;
+}
+.brand-logo { font-size: 28px; font-weight: 800; color: var(--primary); letter-spacing: 0.1em; margin-bottom: 4px; }
+.brand-sub { font-size: 12px; letter-spacing: 0.2em; color: var(--muted); margin-bottom: 24px; text-transform: uppercase; }
+
+/* --- Общие элементы --- */
+label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; text-align: left; }
+input, select, textarea {
+  width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  font-size: 16px; background: #fff; color: var(--ink); font-family: inherit;
+}
+textarea { min-height: 120px; resize: vertical; }
+
+.btn {
+  display: block; width: 100%; border: 0; border-radius: 10px; padding: 14px;
+  font-size: 16px; font-weight: 600; cursor: pointer; background: var(--primary); color: #fff;
+  text-align: center; margin-top: 20px;
+}
+.btn.secondary { background: #fff; color: var(--primary); border: 1px solid var(--primary); margin-top: 10px; }
+.btn.ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.4); padding: 6px 12px; font-size: 13px; width: auto; margin: 0; }
+
+/* --- Шапка --- */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: var(--primary); color: #fff; position: sticky; top: 0; z-index: 10;
+}
+.topbar h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.topbar .right { display: flex; gap: 8px; align-items: center; }
+.role-tag { font-size: 11px; background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 99px; text-transform: uppercase; }
+
+/* --- Контейнер --- */
+.container { max-width: 600px; margin: 0 auto; padding: 16px; }
+.container.wide { max-width: 1100px; }
+
+/* --- Карточки --- */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.card .city { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
+.card .addr { font-size: 16px; font-weight: 700; margin: 4px 0 8px; }
+.card .meta { font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.card .text { white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+
+/* --- Уведомления --- */
+.toast {
+  position: fixed; left: 16px; right: 16px; bottom: 16px; padding: 14px; border-radius: 10px;
+  color: #fff; background: var(--ok); z-index: 100; display: none; text-align: center; font-weight: 600;
+}
+.toast.err { background: var(--err); }
+
+/* --- Адаптив --- */
+@media (min-width: 720px) {
+  .container { padding: 24px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+}

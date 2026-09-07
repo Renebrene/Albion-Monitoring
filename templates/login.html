@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>АЛЬБИОН · Вход</title>
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
+<div class="login-wrap">
+  <form class="login-box" id="form">
+    <div class="brand-logo">АЛЬБИОН</div>
+    <div class="brand-sub">Мониторинг экранов</div>
+    
+    <label>Логин</label>
+    <input name="login" autocomplete="username" required placeholder="админ">
+    
+    <label>Пароль</label>
+    <input name="password" type="password" autocomplete="current-password" required placeholder="альбион">
+    
+    <button class="btn" type="submit">Войти</button>
+    
+    <div style="margin-top:20px; font-size:12px; color:var(--muted); line-height:1.5;">
+      По умолчанию:<br>
+      <b>админ</b> / альбион<br>
+      <b>сервис1</b> / альбион<br>
+      <b>директор</b> / альбион
+    </div>
+  </form>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/static/login.js"></script>
+</body></html>

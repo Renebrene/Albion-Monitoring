@@ -1,0 +1,1124 @@
+"""
+АЛЬБИОН. Мониторинг экранов
+Главный сервер FastAPI
+"""
+import os
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, List
+from io import BytesIO
+
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from PIL import Image
+
+from database import get_db, init_schema, UPLOADS_DIR, get_setting, set_setting
+from auth import (
+    hash_password, verify_password, create_token,
+    get_current_user, require_role, require_any,
+    ROLE_LABELS, ROLE_HOME,
+)
+
+init_schema()
+
+app = FastAPI(title="АЛЬБИОН. Мониторинг экранов")
+
+BASE_DIR = Path(__file__).parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# ---------- Ограничения для медиа ----------
+# Фото
+PHOTO_MAX_SIZE = 5 * 1024 * 1024           # 5 МБ (исходный)
+PHOTO_COMPRESSED_SIZE = 2.5 * 1024 * 1024  # 2.5 МБ (после сжатия)
+PHOTO_MAX_WIDTH = 1280
+PHOTO_MAX_HEIGHT = 2048
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+# Видео
+VIDEO_MAX_SIZE = 50 * 1024 * 1024          # 50 МБ
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
+
+MAX_MEDIA_PER_REPORT = 10   # фото+видео суммарно
+
+
+# ---------- Сжатие фото ----------
+def compress_image(image_data: bytes) -> bytes:
+    img = Image.open(BytesIO(image_data))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    w, h = img.size
+    if w > PHOTO_MAX_WIDTH or h > PHOTO_MAX_HEIGHT:
+        ratio = min(PHOTO_MAX_WIDTH / w, PHOTO_MAX_HEIGHT / h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
+
+    output = BytesIO()
+    quality = 85
+    img.save(output, format="JPEG", quality=quality, optimize=True)
+    data = output.getvalue()
+
+    while len(data) > PHOTO_COMPRESSED_SIZE and quality > 50:
+        quality -= 5
+        output = BytesIO()
+        img.save(output, format="JPEG", quality=quality, optimize=True)
+        data = output.getvalue()
+
+    return data
+
+
+# ---------- Pydantic-модели ----------
+class LoginIn(BaseModel):
+    login: str
+    password: str
+
+
+class ReportIn(BaseModel):
+    address_id: int
+    text: str
+    task_id: Optional[int] = None
+    media: List[str] = []   # список имён загруженных файлов
+
+
+class TaskIn(BaseModel):
+    address_id: int
+    description: str
+
+
+class SettingIn(BaseModel):
+    key: str
+    value: str
+
+
+# ---------- Страницы ----------
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/client", response_class=HTMLResponse)
+def client_page(request: Request):
+    return templates.TemplateResponse("client.html", {"request": request})
+
+
+@app.get("/server", response_class=HTMLResponse)
+def server_page(request: Request):
+    return templates.TemplateResponse("server.html", {"request": request})
+
+
+@app.get("/tasks", response_class=HTMLResponse)
+def tasks_page(request: Request):
+    return templates.TemplateResponse("tasks.html", {"request": request})
+
+
+# ==========================================================
+#                       API
+# ==========================================================
+
+# ---------- Авторизация ----------
+@app.post("/api/login")
+def login(data: LoginIn):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, login, password_hash, role FROM users WHERE login = ?",
+            (data.login,),
+        ).fetchone()
+    if not row or not verify_password(data.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    token = create_token(row["id"], row["login"], row["role"])
+    return {
+        "token": token,
+        "role": row["role"],
+        "role_label": ROLE_LABELS[row["role"]],
+        "login": row["login"],
+        "home": ROLE_HOME[row["role"]],
+    }
+
+
+@app.get("/api/me")
+def me(request: Request):
+    user = get_current_user(request)
+    return {
+        "sub": user["sub"],
+        "login": user["login"],
+        "role": user["role"],
+        "role_label": ROLE_LABELS.get(user["role"], user["role"]),
+    }
+
+
+# ---------- Настройки медиа (только Админ) ----------
+@app.get("/api/settings")
+def get_settings(request: Request):
+    """Получить все настройки. Доступно всем авторизованным."""
+    get_current_user(request)
+    return {
+        "photos_enabled": get_setting("photos_enabled", "1") == "1",
+        "videos_enabled": get_setting("videos_enabled", "1") == "1",
+    }
+
+
+@app.put("/api/settings")
+def update_setting(data: SettingIn, request: Request):
+    """Изменить настройку. Только Админ."""
+    require_any(request, ["admin"])
+    allowed_keys = {"photos_enabled", "videos_enabled"}
+    if data.key not in allowed_keys:
+        raise HTTPException(status_code=400, detail="Неизвестная настройка")
+    if data.value not in ("0", "1"):
+        raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
+    set_setting(data.key, data.value)
+    return {"ok": True, "key": data.key, "value": data.value}
+
+
+# ---------- Справочники ----------
+@app.get("/api/cities")
+def cities():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT city FROM addresses WHERE active = 1 ORDER BY city"
+        ).fetchall()
+    return [r["city"] for r in rows]
+
+
+@app.get("/api/manufacturers")
+def manufacturers():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT manufacturer FROM addresses "
+            "WHERE active = 1 AND manufacturer IS NOT NULL AND manufacturer != '' "
+            "ORDER BY manufacturer"
+        ).fetchall()
+    return [r["manufacturer"] for r in rows]
+
+
+@app.get("/api/addresses")
+def addresses(
+    city: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 100,
+):
+    with get_db() as conn:
+        sql = "SELECT id, city, address_name, manufacturer FROM addresses WHERE active = 1"
+        params: list = []
+        if city:
+            sql += " AND city = ?"; params.append(city)
+        if manufacturer:
+            sql += " AND manufacturer = ?"; params.append(manufacturer)
+        if q:
+            sql += " AND address_name LIKE ?"; params.append(f"%{q}%")
+        sql += " ORDER BY city, address_name LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- Загрузка медиа (фото ИЛИ видео) ----------
+@app.post("/api/upload")
+async def upload_media(request: Request, file: UploadFile = File(...)):
+    """Загрузка фото или видео. Проверяет настройки."""
+    get_current_user(request)
+
+    ext = Path(file.filename).suffix.lower()
+    content = await file.read()
+
+    # Определяем тип
+    if ext in PHOTO_EXTENSIONS:
+        media_type = "photo"
+        if get_setting("photos_enabled", "1") != "1":
+            raise HTTPException(status_code=403, detail="Загрузка фото отключена администратором")
+        if len(content) > PHOTO_MAX_SIZE:
+            raise HTTPException(status_code=400, detail="Фото слишком большое (макс. 5 МБ)")
+        try:
+            compressed = compress_image(content)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Ошибка обработки фото: {e}")
+        filename = f"temp_{uuid.uuid4().hex}.jpg"
+        with open(UPLOADS_DIR / filename, "wb") as f:
+            f.write(compressed)
+
+    elif ext in VIDEO_EXTENSIONS:
+        media_type = "video"
+        if get_setting("videos_enabled", "1") != "1":
+            raise HTTPException(status_code=403, detail="Загрузка видео отключена администратором")
+        if len(content) > VIDEO_MAX_SIZE:
+            raise HTTPException(status_code=400, detail="Видео слишком большое (макс. 50 МБ)")
+        filename = f"temp_{uuid.uuid4().hex}{ext}"
+        with open(UPLOADS_DIR / filename, "wb") as f:
+            f.write(content)
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустимый формат. Разрешены: фото {sorted(PHOTO_EXTENSIONS)}, видео {sorted(VIDEO_EXTENSIONS)}",
+        )
+
+    return {
+        "filename": filename,
+        "url": f"/uploads/{filename}",
+        "media_type": media_type,
+    }
+
+
+# ---------- Записи мониторинга ----------
+@app.post("/api/reports")
+def create_report(data: ReportIn, request: Request):
+    user = require_any(request, ["admin", "service"])
+
+    with get_db() as conn:
+        addr = conn.execute(
+            "SELECT id FROM addresses WHERE id = ? AND active = 1",
+            (data.address_id,),
+        ).fetchone()
+        if not addr:
+            raise HTTPException(status_code=400, detail="Адрес не найден")
+        if not data.text.strip():
+            raise HTTPException(status_code=400, detail="Пустой текст")
+
+        if data.task_id:
+            task = conn.execute(
+                "SELECT id, status FROM tasks WHERE id = ?", (data.task_id,)
+            ).fetchone()
+            if not task:
+                raise HTTPException(status_code=400, detail="Задание не найдено")
+            if task["status"] != "open":
+                raise HTTPException(status_code=400, detail="Задание уже закрыто")
+
+        cursor = conn.execute(
+            "INSERT INTO reports (address_id, user_id, task_id, text) VALUES (?, ?, ?, ?)",
+            (data.address_id, user["sub"], data.task_id, data.text.strip()),
+        )
+        report_id = cursor.lastrowid
+
+        # Привязываем медиа
+        if data.media:
+            if len(data.media) > MAX_MEDIA_PER_REPORT:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Слишком много файлов (макс. {MAX_MEDIA_PER_REPORT})",
+                )
+            for temp_name in data.media:
+                if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
+                    continue
+                old_path = UPLOADS_DIR / temp_name
+                if not old_path.exists():
+                    continue
+                ext = old_path.suffix
+                # Определяем тип по расширению
+                media_type = "video" if ext in VIDEO_EXTENSIONS else "photo"
+                new_name = f"r{report_id}_{uuid.uuid4().hex[:8]}{ext}"
+                old_path.rename(UPLOADS_DIR / new_name)
+                conn.execute(
+                    "INSERT INTO media (report_id, filename, media_type) VALUES (?, ?, ?)",
+                    (report_id, new_name, media_type),
+                )
+
+        if data.task_id:
+            conn.execute(
+                "UPDATE tasks SET status='done', closed_at=CURRENT_TIMESTAMP, "
+                "closed_by=? WHERE id=?",
+                (user["sub"], data.task_id),
+            )
+
+    return {"ok": True, "report_id": report_id}
+
+
+@app.get("/api/reports")
+def list_reports(
+    request: Request,
+    city: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    address_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort: str = "desc",
+    limit: int = 200,
+):
+    require_any(request, ["admin", "director"])
+
+    with get_db() as conn:
+        sql = """
+            SELECT r.id, r.created_at, r.text, r.task_id,
+                   a.id AS address_id, a.city, a.address_name, a.manufacturer,
+                   u.login AS author
+            FROM reports r
+            JOIN addresses a ON a.id = r.address_id
+            JOIN users u ON u.id = r.user_id
+            WHERE 1=1
+        """
+        params: list = []
+        if city:
+            sql += " AND a.city = ?"; params.append(city)
+        if manufacturer:
+            sql += " AND a.manufacturer = ?"; params.append(manufacturer)
+        if address_id:
+            sql += " AND r.address_id = ?"; params.append(address_id)
+        if user_id:
+            sql += " AND r.user_id = ?"; params.append(user_id)
+        if date_from:
+            sql += " AND date(r.created_at) >= ?"; params.append(date_from)
+        if date_to:
+            sql += " AND date(r.created_at) <= ?"; params.append(date_to)
+
+        if sort == "asc":
+            sql += " ORDER BY r.created_at ASC, r.id ASC"
+        elif sort == "city":
+            sql += " ORDER BY a.city, a.address_name, r.created_at DESC"
+        elif sort == "address":
+            sql += " ORDER BY a.address_name, r.created_at DESC"
+        elif sort == "manufacturer":
+            sql += " ORDER BY a.manufacturer, r.created_at DESC"
+        else:
+            sql += " ORDER BY r.created_at DESC, r.id DESC"
+
+        sql += " LIMIT ?"; params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+
+        reports = []
+        for row in rows:
+            report = dict(row)
+            media = conn.execute(
+                "SELECT filename, media_type FROM media WHERE report_id = ? ORDER BY created_at",
+                (report["id"],),
+            ).fetchall()
+            report["media"] = [
+                {"url": f"/uploads/{m['filename']}", "type": m["media_type"]}
+                for m in media
+            ]
+            reports.append(report)
+
+    return reports
+
+
+# ---------- Задания ----------
+@app.post("/api/tasks")
+def create_task(data: TaskIn, request: Request):
+    user = require_any(request, ["admin"])
+    with get_db() as conn:
+        addr = conn.execute(
+            "SELECT id FROM addresses WHERE id = ? AND active = 1",
+            (data.address_id,),
+        ).fetchone()
+        if not addr:
+            raise HTTPException(status_code=400, detail="Адрес не найден")
+        if not data.description.strip():
+            raise HTTPException(status_code=400, detail="Пустое описание")
+
+        cursor = conn.execute(
+            "INSERT INTO tasks (address_id, created_by, description) VALUES (?, ?, ?)",
+            (data.address_id, user["sub"], data.description.strip()),
+        )
+        task_id = cursor.lastrowid
+    return {"ok": True, "task_id": task_id}
+
+
+@app.get("/api/tasks")
+def list_tasks(
+    request: Request,
+    status: Optional[str] = None,
+    city: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+):
+    user = get_current_user(request)
+    if user["role"] == "service" and status != "open":
+        status = "open"
+
+    with get_db() as conn:
+        sql = """
+            SELECT t.id, t.description, t.status, t.created_at, t.closed_at,
+                   t.is_important, t.close_reason,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login AS author,
+                   cu.login AS closed_by_login
+            FROM tasks t
+            JOIN addresses a ON a.id = t.address_id
+            JOIN users u ON u.id = t.created_by
+            LEFT JOIN users cu ON cu.id = t.closed_by
+            WHERE 1=1
+        """
+        params: list = []
+        if status and status != "all":
+            sql += " AND t.status = ?"; params.append(status)
+        if city:
+            sql += " AND a.city = ?"; params.append(city)
+        if manufacturer:
+            sql += " AND a.manufacturer = ?"; params.append(manufacturer)
+        sql += " ORDER BY t.created_at DESC"
+        rows = conn.execute(sql, params).fetchall()
+
+        tasks = []
+        for row in rows:
+            task = dict(row)
+            media = conn.execute(
+                "SELECT filename, media_type FROM media WHERE task_id = ? AND report_id IS NULL",
+                (task["id"],),
+            ).fetchall()
+            task["media"] = [
+                {"url": f"/uploads/{m['filename']}", "type": m["media_type"]}
+                for m in media
+            ]
+
+            if task["status"] == "done":
+                task["urgency"] = "done"
+            else:
+                created = datetime.fromisoformat(task["created_at"].replace(" ", "T"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+                if age_hours < 24:
+                    task["urgency"] = "new"
+                elif age_hours < 48:
+                    task["urgency"] = "warning"
+                else:
+                    task["urgency"] = "overdue"
+            tasks.append(task)
+    return tasks
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int, request: Request):
+    require_any(request, ["admin"])
+    with get_db() as conn:
+        media = conn.execute(
+            "SELECT filename FROM media WHERE task_id = ? AND report_id IS NULL",
+            (task_id,),
+        ).fetchall()
+        for m in media:
+            try:
+                (UPLOADS_DIR / m["filename"]).unlink(missing_ok=True)
+            except Exception:
+                pass
+        conn.execute("DELETE FROM media WHERE task_id = ? AND report_id IS NULL", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    return {"ok": True}
+
+
+# ---------- Экспорт в Excel ----------
+@app.get("/api/export/excel")
+def export_excel(
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    require_any(request, ["admin", "director"])
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
+    with get_db() as conn:
+        tasks = conn.execute(
+            """
+            SELECT t.id, t.description, t.status, t.created_at, t.closed_at,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login AS author, cu.login AS closed_by
+            FROM tasks t
+            JOIN addresses a ON a.id = t.address_id
+            JOIN users u ON u.id = t.created_by
+            LEFT JOIN users cu ON cu.id = t.closed_by
+            WHERE (:df IS NULL OR date(t.created_at) >= :df)
+              AND (:dt IS NULL OR date(t.created_at) <= :dt)
+            ORDER BY t.created_at DESC
+            """,
+            {"df": date_from, "dt": date_to},
+        ).fetchall()
+
+        reports = conn.execute(
+            """
+            SELECT r.id, r.created_at, r.text,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login AS author
+            FROM reports r
+            JOIN addresses a ON a.id = r.address_id
+            JOIN users u ON u.id = r.user_id
+            WHERE (:df IS NULL OR date(r.created_at) >= :df)
+              AND (:dt IS NULL OR date(r.created_at) <= :dt)
+            ORDER BY r.created_at DESC
+            """,
+            {"df": date_from, "dt": date_to},
+        ).fetchall()
+
+    wb = Workbook()
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1E40AF")
+
+    ws1 = wb.active
+    ws1.title = "Задания"
+    headers1 = ["№", "Город", "Адрес", "Производитель", "Описание", "Статус",
+                "Создано", "Автор", "Закрыто", "Исполнитель"]
+    ws1.append(headers1)
+    for cell in ws1[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for t in tasks:
+        ws1.append([
+            t["id"], t["city"], t["address_name"], t["manufacturer"] or "",
+            t["description"],
+            "Выполнено" if t["status"] == "done" else "Открыто",
+            t["created_at"], t["author"],
+            t["closed_at"] or "", t["closed_by"] or "",
+        ])
+
+    ws2 = wb.create_sheet("Мониторинг")
+    headers2 = ["№", "Дата", "Город", "Адрес", "Производитель", "Автор", "Комментарий"]
+    ws2.append(headers2)
+    for cell in ws2[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for r in reports:
+        ws2.append([
+            r["id"], r["created_at"], r["city"], r["address_name"],
+            r["manufacturer"] or "", r["author"], r["text"],
+        ])
+
+    for ws in [ws1, ws2]:
+        for col in ws.columns:
+            max_len = max((len(str(c.value or "")) for c in col), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 50)
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+
+    filename = f"albion_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    return StreamingResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ---------- Запуск ----------
+
+# ========== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И НАСТРОЙКАМИ (АДМИН) ==========
+class UserIn(BaseModel):
+    login: str
+    password: str
+    role: str
+
+class PasswordIn(BaseModel):
+    new_password: str
+
+class SettingIn(BaseModel):
+    key: str
+    value: str
+
+@app.get("/api/settings")
+def get_settings_api(request: Request):
+    get_current_user(request)
+    return {
+        "photos_enabled": get_setting("photos_enabled", "1") == "1",
+        "videos_enabled": get_setting("videos_enabled", "1") == "1",
+    }
+
+@app.put("/api/settings")
+def update_setting_api(data: SettingIn, request: Request):
+    require_any(request, ["admin"])
+    if data.key not in ("photos_enabled", "videos_enabled"):
+        raise HTTPException(status_code=400, detail="Неизвестная настройка")
+    if data.value not in ("0", "1"):
+        raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
+    set_setting(data.key, data.value)
+    return {"ok": True}
+
+@app.get("/api/users")
+def list_users_api(request: Request):
+    require_any(request, ["admin"])
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, login, role FROM users ORDER BY login").fetchall()
+    return [{"id": r["id"], "login": r["login"], "role": r["role"]} for r in rows]
+
+@app.post("/api/users")
+def create_user_api(data: UserIn, request: Request):
+    require_any(request, ["admin"])
+    if data.role not in ("admin", "service", "director"):
+        raise HTTPException(status_code=400, detail="Неверная роль")
+    with get_db() as conn:
+        exists = conn.execute("SELECT 1 FROM users WHERE login = ?", (data.login,)).fetchone()
+        if exists:
+            raise HTTPException(status_code=400, detail="Логин уже занят")
+        conn.execute(
+            "INSERT INTO users (login, password_hash, role) VALUES (?, ?, ?)",
+            (data.login, hash_password(data.password), data.role)
+        )
+    return {"ok": True}
+
+@app.put("/api/users/{user_id}/password")
+def change_password_api(user_id: int, data: PasswordIn, request: Request):
+    require_any(request, ["admin"])
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(data.new_password), user_id)
+        )
+    return {"ok": True}
+# =========================================================================
+
+
+# ========== ЧАТ И КОММЕНТАРИИ ==========
+class CommentIn(BaseModel):
+    task_id: int
+    text: str
+    media: List[str] = []
+
+@app.get("/api/tasks/{task_id}/comments")
+def get_comments(task_id: int, request: Request):
+    get_current_user(request)
+    import json
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT c.id, c.text, c.media_json, c.created_at, u.login, u.role
+            FROM comments c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.task_id = ?
+            ORDER BY c.created_at ASC
+        """, (task_id,)).fetchall()
+        
+        comments = []
+        for r in rows:
+            media = json.loads(r["media_json"]) if r["media_json"] else []
+            comments.append({
+                "id": r["id"], "text": r["text"], "media": media,
+                "created_at": r["created_at"], "author": r["login"], "role": r["role"],
+                "is_director_comment": False
+            })
+        
+        # Добавляем комментарии директора (видны всем)
+        dc_rows = conn.execute("""
+            SELECT dc.id, dc.text, dc.created_at, u.login
+            FROM director_comments dc
+            JOIN users u ON u.id = dc.user_id
+            WHERE dc.item_type = 'task' AND dc.item_id = ?
+            ORDER BY dc.created_at ASC
+        """, (task_id,)).fetchall()
+        
+        for dc in dc_rows:
+            comments.append({
+                "id": dc["id"], "text": dc["text"], "media": [],
+                "created_at": dc["created_at"], "author": dc["login"], "role": "director",
+                "is_director_comment": True
+            })
+        
+        # Сортируем по времени
+        comments.sort(key=lambda x: x["created_at"])
+        return comments
+
+@app.post("/api/comments")
+def add_comment(data: CommentIn, request: Request):
+    user = get_current_user(request)
+    import json
+    with get_db() as conn:
+        if user["role"] == "director":
+            # Директор пишет в свою таблицу (видны всем как жёлтые)
+            conn.execute("""
+                INSERT INTO director_comments (item_type, item_id, user_id, text)
+                VALUES ('task', ?, ?, ?)
+            """, (data.task_id, user["sub"], data.text.strip()))
+        else:
+            # Остальные пишут в обычный чат
+            conn.execute("""
+                INSERT INTO comments (task_id, user_id, text, media_json)
+                VALUES (?, ?, ?, ?)
+            """, (data.task_id, user["sub"], data.text.strip(), json.dumps(data.media)))
+        
+        # Автозакрытие убрано — закрывает только Админ
+            
+    return {"ok": True}
+# ========================================
+
+
+# ========== ОБНОВЛЕНИЕ ЗАДАНИЯ (АДМИН) ==========
+class TaskUpdateIn(BaseModel):
+    is_important: bool = None
+    status: str = None
+    close_reason: str = None
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: int, data: TaskUpdateIn, request: Request):
+    require_any(request, ["admin"])
+    with get_db() as conn:
+        task = conn.execute("SELECT id, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not task:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        
+        updates = []
+        params = []
+        
+        if data.is_important is not None:
+            updates.append("is_important = ?")
+            params.append(1 if data.is_important else 0)
+        
+        if data.status is not None:
+            if data.status not in ("open", "done"):
+                raise HTTPException(status_code=400, detail="Неверный статус")
+            updates.append("status = ?")
+            params.append(data.status)
+            if data.status == "done":
+                updates.append("closed_at = CURRENT_TIMESTAMP")
+                updates.append("closed_by = ?")
+                params.append(get_current_user(request)["sub"])
+            else:
+                updates.append("closed_at = NULL")
+                updates.append("closed_by = NULL")
+        
+        if data.close_reason is not None:
+            updates.append("close_reason = ?")
+            params.append(data.close_reason.strip() if data.close_reason.strip() else None)
+        
+        if updates:
+            params.append(task_id)
+            conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params)
+    
+    return {"ok": True}
+# ================================================
+
+
+# ========== МОНИТОРИНГ (ЧАТЫ ПО АДРЕСАМ) ==========
+@app.get("/api/monitoring/{address_id}")
+def get_monitoring(address_id: int, request: Request):
+    """Получить сообщения мониторинга по адресу"""
+    get_current_user(request)
+    import json
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT r.id, r.text, r.created_at, u.login, u.role
+            FROM reports r
+            JOIN users u ON u.id = r.user_id
+            WHERE r.address_id = ? AND r.task_id IS NULL
+            ORDER BY r.created_at ASC
+        """, (address_id,)).fetchall()
+        
+        messages = []
+        for r in rows:
+            media = conn.execute(
+                "SELECT filename, media_type FROM media WHERE report_id = ?",
+                (r["id"],)
+            ).fetchall()
+            messages.append({
+                "id": r["id"],
+                "text": r["text"],
+                "created_at": r["created_at"],
+                "author": r["login"],
+                "role": r["role"],
+                "media": [{"url": f"/uploads/{m['filename']}", "type": m["media_type"]} for m in media],
+                "is_director_comment": False
+            })
+        
+        # Добавляем комментарии директора (видны всем)
+        dc_rows = conn.execute("""
+            SELECT dc.id, dc.text, dc.created_at, u.login
+            FROM director_comments dc
+            JOIN users u ON u.id = dc.user_id
+            WHERE dc.item_type = 'monitoring' AND dc.item_id = ?
+            ORDER BY dc.created_at ASC
+        """, (address_id,)).fetchall()
+        
+        for dc in dc_rows:
+            messages.append({
+                "id": dc["id"], "text": dc["text"], "media": [],
+                "created_at": dc["created_at"], "author": dc["login"], "role": "director",
+                "is_director_comment": True
+            })
+        
+        messages.sort(key=lambda x: x["created_at"])
+        return messages
+
+@app.post("/api/monitoring")
+def send_monitoring(data: ReportIn, request: Request):
+    """Отправить сообщение мониторинга"""
+    user = get_current_user(request)
+    with get_db() as conn:
+        addr = conn.execute(
+            "SELECT id FROM addresses WHERE id = ? AND active = 1",
+            (data.address_id,)
+        ).fetchone()
+        if not addr:
+            raise HTTPException(status_code=400, detail="Адрес не найден")
+        if not data.text.strip():
+            raise HTTPException(status_code=400, detail="Пустой текст")
+        
+        if user["role"] == "director":
+            # Директор пишет комментарий к мониторингу
+            conn.execute(
+                "INSERT INTO director_comments (item_type, item_id, user_id, text) VALUES ('monitoring', ?, ?, ?)",
+                (data.address_id, user["sub"], data.text.strip())
+            )
+        else:
+            # Остальные создают обычную запись мониторинга
+            cursor = conn.execute(
+                "INSERT INTO reports (address_id, user_id, task_id, text) VALUES (?, ?, NULL, ?)",
+                (data.address_id, user["sub"], data.text.strip())
+            )
+        report_id = cursor.lastrowid
+        
+        # Привязываем медиа
+        if data.media:
+            for temp_name in data.media:
+                if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
+                    continue
+                old_path = UPLOADS_DIR / temp_name
+                if not old_path.exists():
+                    continue
+                ext = old_path.suffix
+                media_type = "video" if ext in VIDEO_EXTENSIONS else "photo"
+                new_name = f"m{report_id}_{uuid.uuid4().hex[:8]}{ext}"
+                old_path.rename(UPLOADS_DIR / new_name)
+                conn.execute(
+                    "INSERT INTO media (report_id, filename, media_type) VALUES (?, ?, ?)",
+                    (report_id, new_name, media_type)
+                )
+    
+    return {"ok": True, "report_id": report_id}
+# ================================================
+
+
+# ========== ЛЕНТА ДИРЕКТОРА ==========
+@app.get("/api/director/feed")
+def director_feed(request: Request):
+    """Смешанная лента заданий и мониторинга для директора"""
+    get_current_user(request)
+    with get_db() as conn:
+        # Задания
+        tasks = conn.execute("""
+            SELECT 'task' as type, t.id, t.description as text, t.created_at,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login as author, t.status, t.is_important, t.close_reason
+            FROM tasks t
+            JOIN addresses a ON a.id = t.address_id
+            JOIN users u ON u.id = t.created_by
+            ORDER BY t.created_at DESC LIMIT 200
+        """).fetchall()
+        
+        # Мониторинг (последние записи)
+        monitoring = conn.execute("""
+            SELECT 'monitoring' as type, r.id, r.text, r.created_at,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login as author, NULL as status, 0 as is_important, NULL as close_reason
+            FROM reports r
+            JOIN addresses a ON a.id = r.address_id
+            JOIN users u ON u.id = r.user_id
+            WHERE r.task_id IS NULL
+            ORDER BY r.created_at DESC LIMIT 200
+        """).fetchall()
+        
+        # Объединяем и сортируем по дате
+        feed = []
+        for row in tasks:
+            feed.append(dict(row))
+        for row in monitoring:
+            feed.append(dict(row))
+        
+        feed.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        # Добавляем комментарии директора к каждому элементу
+        result = []
+        for item in feed:
+            comments = conn.execute("""
+                SELECT dc.text, dc.created_at, u.login
+                FROM director_comments dc
+                JOIN users u ON u.id = dc.user_id
+                WHERE dc.item_type = ? AND dc.item_id = ?
+                ORDER BY dc.created_at ASC
+            """, (item["type"], item["id"])).fetchall()
+            
+            item["director_comments"] = [
+                {"text": c["text"], "created_at": c["created_at"], "author": c["login"]}
+                for c in comments
+            ]
+            result.append(item)
+        
+        # Определяем просроченные задания (нет ответов более 24 часов)
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        for item in result:
+            if item["type"] == "task" and item["status"] == "open":
+                # Проверяем, есть ли комментарии и когда был последний
+                if item["messages"]:
+                    last_msg_time = datetime.fromisoformat(item["messages"][-1]["created_at"])
+                    hours_since = (now - last_msg_time).total_seconds() / 3600
+                    item["is_overdue"] = hours_since > 24
+                else:
+                    # Если вообще нет сообщений, считаем от создания задания
+                    created_time = datetime.fromisoformat(item["created_at"])
+                    hours_since = (now - created_time).total_seconds() / 3600
+                    item["is_overdue"] = hours_since > 24
+            else:
+                item["is_overdue"] = False
+        
+        return result
+
+class DirectorCommentIn(BaseModel):
+    item_type: str  # 'task' или 'monitoring'
+    item_id: int
+    text: str
+
+@app.post("/api/director/comments")
+def add_director_comment(data: DirectorCommentIn, request: Request):
+    """Директор оставляет комментарий"""
+    user = get_current_user(request)
+    if user["role"] not in ("admin", "director"):
+        raise HTTPException(status_code=403, detail="Только админ или директор")
+    if data.item_type not in ("task", "monitoring"):
+        raise HTTPException(status_code=400, detail="Неверный тип")
+    if not data.text.strip():
+        raise HTTPException(status_code=400, detail="Пустой текст")
+    
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO director_comments (item_type, item_id, user_id, text) VALUES (?, ?, ?, ?)",
+            (data.item_type, data.item_id, user["sub"], data.text.strip())
+        )
+    return {"ok": True}
+# ======================================
+
+
+@app.get("/director", response_class=HTMLResponse)
+def director_page(request: Request):
+    return templates.TemplateResponse("director.html", {"request": request})
+
+
+# ========== ЕДИНАЯ ЛЕНТА (МОНИТОРИНГ + ЗАДАНИЯ) ==========
+@app.get("/api/feed")
+def get_unified_feed(request: Request):
+    """Возвращает смешанную ленту заданий и мониторинга"""
+    user = get_current_user(request)
+    with get_db() as conn:
+        # 1. Получаем задания
+        tasks = conn.execute("""
+            SELECT 'task' as type, t.id, t.description as text, t.created_at,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login as author, t.status, t.is_important, t.close_reason
+            FROM tasks t
+            JOIN addresses a ON a.id = t.address_id
+            JOIN users u ON u.id = t.created_by
+            ORDER BY t.created_at DESC LIMIT 300
+        """).fetchall()
+        
+        # 2. Получаем записи мониторинга
+        monitoring = conn.execute("""
+            SELECT 'monitoring' as type, r.id, r.text, r.created_at,
+                   a.city, a.address_name, a.manufacturer,
+                   u.login as author, 'open' as status, 0 as is_important, NULL as close_reason
+            FROM reports r
+            JOIN addresses a ON a.id = r.address_id
+            JOIN users u ON u.id = r.user_id
+            WHERE r.task_id IS NULL
+            ORDER BY r.created_at DESC LIMIT 300
+        """).fetchall()
+        
+        # 3. Объединяем и сортируем по дате (сначала новые)
+        feed = []
+        for row in tasks:
+            feed.append(dict(row))
+        for row in monitoring:
+            feed.append(dict(row))
+        
+        feed.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        # 4. Для каждого элемента подгружаем чат и комментарии директора
+        result = []
+        for item in feed:
+            messages = []
+            
+            if item["type"] == "task":
+                # Обычные сообщения задания
+                c_rows = conn.execute("""
+                    SELECT c.id, c.text, c.media_json, c.created_at, u.login, u.role
+                    FROM comments c JOIN users u ON u.id = c.user_id
+                    WHERE c.task_id = ? ORDER BY c.created_at ASC
+                """, (item["id"],)).fetchall()
+                for c in c_rows:
+                    import json
+                    messages.append({
+                        "id": c["id"], "text": c["text"], 
+                        "media": json.loads(c["media_json"]) if c["media_json"] else [],
+                        "created_at": c["created_at"], "author": c["login"], "role": c["role"],
+                        "is_director_comment": False
+                    })
+                
+                # Комментарии директора к заданию
+                dc_rows = conn.execute("""
+                    SELECT dc.id, dc.text, dc.created_at, u.login
+                    FROM director_comments dc JOIN users u ON u.id = dc.user_id
+                    WHERE dc.item_type = 'task' AND dc.item_id = ? ORDER BY dc.created_at ASC
+                """, (item["id"],)).fetchall()
+                for dc in dc_rows:
+                    messages.append({
+                        "id": dc["id"], "text": dc["text"], "media": [],
+                        "created_at": dc["created_at"], "author": dc["login"], "role": "director",
+                        "is_director_comment": True
+                    })
+                    
+            else: # monitoring
+                # Обычные сообщения мониторинга
+                m_rows = conn.execute("""
+                    SELECT r.id, r.text, r.created_at, u.login, u.role
+                    FROM reports r JOIN users u ON u.id = r.user_id
+                    WHERE r.address_id = ? AND r.task_id IS NULL ORDER BY r.created_at ASC
+                """, (item["id"],)).fetchall()
+                for m in m_rows:
+                    media = conn.execute(
+                        "SELECT filename, media_type FROM media WHERE report_id = ?", (m["id"],)
+                    ).fetchall()
+                    messages.append({
+                        "id": m["id"], "text": m["text"],
+                        "media": [{"url": f"/uploads/{med['filename']}", "type": med["media_type"]} for med in media],
+                        "created_at": m["created_at"], "author": m["login"], "role": m["role"],
+                        "is_director_comment": False
+                    })
+                
+                # Комментарии директора к мониторингу
+                dc_rows = conn.execute("""
+                    SELECT dc.id, dc.text, dc.created_at, u.login
+                    FROM director_comments dc JOIN users u ON u.id = dc.user_id
+                    WHERE dc.item_type = 'monitoring' AND dc.item_id = ? ORDER BY dc.created_at ASC
+                """, (item["id"],)).fetchall()
+                for dc in dc_rows:
+                    messages.append({
+                        "id": dc["id"], "text": dc["text"], "media": [],
+                        "created_at": dc["created_at"], "author": dc["login"], "role": "director",
+                        "is_director_comment": True
+                    })
+            
+            # Сортируем все сообщения по времени
+            messages.sort(key=lambda x: x["created_at"])
+            item["messages"] = messages
+            # Флаг: есть ли комментарии директора
+            item["has_director_comment"] = any(m.get("is_director_comment") for m in messages)
+            result.append(item)
+            
+        # Определяем просроченные задания (нет ответов более 24 часов)
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        for item in result:
+            if item["type"] == "task" and item["status"] == "open":
+                # Проверяем, есть ли комментарии и когда был последний
+                if item["messages"]:
+                    last_msg_time = datetime.fromisoformat(item["messages"][-1]["created_at"])
+                    hours_since = (now - last_msg_time).total_seconds() / 3600
+                    item["is_overdue"] = hours_since > 24
+                else:
+                    # Если вообще нет сообщений, считаем от создания задания
+                    created_time = datetime.fromisoformat(item["created_at"])
+                    hours_since = (now - created_time).total_seconds() / 3600
+                    item["is_overdue"] = hours_since > 24
+            else:
+                item["is_overdue"] = False
+        
+        return result
+# ==========================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

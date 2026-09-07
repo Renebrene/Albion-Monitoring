@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>АЛЬБИОН. Мониторинг экранов</title>
+<link rel="stylesheet" href="/static/style.css?v=105">
+<style>
+.topbar h1 { display: flex; align-items: center; font-size: 18px; margin: 0; }
+.topbar h1 img { height: 32px; margin-right: 12px; object-fit: contain; }
+
+.add-task-btn { background: #10b981; color: #fff; border: none; padding: 10px 20px; border-radius: 10px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4); transition: all 0.2s; }
+.add-task-btn:hover { background: #059669; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.5); }
+
+.filter-buttons { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.filter-btn { padding: 8px 16px; border: 2px solid var(--border); border-radius: 8px; background: #fff; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); transition: all 0.2s; }
+.filter-btn:hover { border-color: var(--primary); color: var(--primary); }
+.filter-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+.feed-container { display: flex; flex-direction: column; gap: 16px; }
+.feed-item { background: var(--card); border: 2px solid #cbd5e1; border-radius: 12px; overflow: hidden; transition: all 0.2s ease; cursor: pointer; }
+.feed-item:hover { border-color: #94a3b8; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+.feed-item.expanded { border-color: var(--primary); box-shadow: 0 8px 20px rgba(0,0,0,0.12); }
+.feed-item.important { border-color: #f59e0b; border-width: 3px; }
+.feed-item.done { border-color: #9ca3af; border-width: 2px; opacity: 0.85; }
+.feed-item.overdue { border-color: #ef4444; border-width: 3px; }
+
+.feed-summary { padding: 14px 16px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.feed-summary .left { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.feed-summary .right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; max-width: 35%; min-width: 150px; }
+.feed-summary .short-desc { font-size: 13px; color: var(--muted); line-height: 1.4; text-align: right; max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; font-style: italic; }
+.feed-summary .top-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.feed-summary .bottom-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.feed-summary .addr-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.director-mark { color: #d97706; font-size: 14px; }
+
+.feed-details { display: none; padding: 0 16px 16px; border-top: 1px solid var(--border); padding-top: 16px; background: #fafbfc; }
+.feed-item.expanded .feed-details { display: block; }
+.feed-details .city { font-size: 11px; color: var(--muted); text-transform: uppercase; font-weight: 700; margin-bottom: 4px; }
+.feed-details .full-text { font-size: 14px; line-height: 1.5; padding: 12px; background: #fff; border-left: 3px solid var(--primary); border-radius: 6px; white-space: pre-wrap; margin-bottom: 12px; }
+.close-reason { display: inline-block; margin-bottom: 12px; padding: 4px 10px; background: #fef3c7; color: #92400e; border-radius: 6px; font-size: 12px; font-weight: 600; }
+
+.chat-box { max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 12px; margin-bottom: 12px; }
+.chat-msg { margin-bottom: 12px; display: flex; flex-direction: column; }
+.chat-msg.me { align-items: flex-end; }
+.chat-bubble { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
+.chat-msg:not(.me) .chat-bubble { background: #f1f5f9; color: var(--ink); border-bottom-left-radius: 4px; }
+.chat-msg.me .chat-bubble { background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
+.chat-msg.director .chat-bubble { background: #fef3c7 !important; color: #92400e !important; border: 1px solid #fbbf24 !important; }
+.chat-msg.director .chat-author { color: #d97706 !important; font-weight: 800 !important; }
+.chat-msg.director .chat-author::before { content: ""; }
+.chat-author { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+.chat-msg.me .chat-author { text-align: right; color: rgba(255,255,255,0.8); }
+.chat-time { font-size: 10px; opacity: 0.7; margin-top: 4px; text-align: right; }
+.chat-input-area { display: flex; gap: 8px; align-items: flex-end; }
+.chat-input-area textarea { flex: 1; min-height: 40px; max-height: 100px; margin: 0; padding: 8px 12px; font-size: 14px; }
+.chat-input-area .btn { width: auto; margin: 0; padding: 10px 16px; height: 40px; }
+
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.6); z-index: 1000; align-items: center; justify-content: center; padding: 16px; }
+.modal-overlay.active { display: flex; }
+.modal-box { background: #fff; border-radius: 16px; padding: 24px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; position: relative; }
+.modal-box h3 { margin: 0 0 20px 0; font-size: 18px; }
+.modal-close { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); }
+
+.user-row { display: flex; gap: 8px; align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.status-options { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+.status-option { padding: 12px; border: 2px solid var(--border); border-radius: 8px; cursor: pointer; }
+.status-option.selected { border-color: var(--primary); background: #eff6ff; }
+</style>
+</head><body>
+<header class="topbar">
+  <h1>
+    <img src="/static/logo.png" alt="Logo" onerror="this.style.display='none'">
+    АЛЬБИОН. Мониторинг экранов: <span id="roleName" style="font-weight:400; opacity:0.9; margin-left: 6px;"></span>
+  </h1>
+  <div class="right">
+    <button class="btn ghost" id="adminSettingsBtn" style="display:none">⚙️ Настройки</button>
+    <button class="add-task-btn" id="addTaskBtn" style="display:none">+ Добавить задание</button>
+    <button class="add-task-btn" id="monitoringBtn" style="display:none;background:#0ea5e9">📷 Мониторинг</button>
+    <span id="whoami" style="font-size:12px;opacity:0.9"></span>
+    <button class="btn ghost" id="logout">Выйти</button>
+  </div>
+</header>
+
+<div class="container wide">
+  <div class="filter-buttons" id="filterButtons">
+    <button class="filter-btn active" data-filter="all">Все</button>
+    <button class="filter-btn" data-filter="task">📋 Задания</button>
+    <button class="filter-btn" data-filter="monitoring">📷 Мониторинг</button>
+    <button class="filter-btn" data-filter="current">🔵 Текущие</button>
+    <button class="filter-btn" data-filter="done">✅ Выполненные</button>
+    <button class="filter-btn" data-filter="important">⭐ Важные</button>
+    <button class="filter-btn" data-filter="overdue">🔴 Просроченные</button>
+  </div>
+  
+  <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap">
+    <select id="filterCity" style="flex:1;min-width:150px;margin:0"><option value="">Все города</option></select>
+    <input id="filterSearch" placeholder="Поиск по адресу..." style="flex:1;min-width:200px;margin:0">
+  </div>
+  
+  <div id="feed" class="feed-container"></div>
+</div>
+
+<!-- Модалка: Настройки Админа -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeSettingsModal()">&times;</button>
+    <h3>⚙️ Настройки Администратора</h3>
+    <h4 style="margin:0 0 12px 0;font-size:15px;border-bottom:1px solid var(--border);padding-bottom:8px">Управление медиа</h4>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:20px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0"><input type="checkbox" id="togglePhotos" style="width:auto;transform:scale(1.2)"> Разрешить фото</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0"><input type="checkbox" id="toggleVideos" style="width:auto;transform:scale(1.2)"> Разрешить видео</label>
+    </div>
+    <button class="btn" style="margin-bottom:24px" onclick="saveMediaSettings()">Сохранить</button>
+    <h4 style="margin:0 0 12px 0;font-size:15px;border-bottom:1px solid var(--border);padding-bottom:8px">Пользователи</h4>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <input id="newLogin" placeholder="Логин" style="flex:1;min-width:120px;margin:0">
+      <input id="newPassword" type="password" placeholder="Пароль" style="flex:1;min-width:120px;margin:0">
+      <select id="newRole" style="flex:1;min-width:120px;margin:0"><option value="service">Сервис</option><option value="director">Руководитель</option><option value="admin">Админ</option></select>
+      <button class="btn" style="width:auto;margin:0;padding:10px 20px" onclick="addUser()">Добавить</button>
+    </div>
+    <div id="usersList"></div>
+  </div>
+</div>
+
+<!-- Модалка: Создание задания -->
+<div class="modal-overlay" id="createTaskModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeCreateTaskModal()">&times;</button>
+    <h3> Новое задание</h3>
+    <label>Город</label>
+    <select id="taskCity" style="margin-bottom:12px;width:100%"><option value="">— выберите город —</option></select>
+    <label>Адрес</label>
+    <input id="taskAddrSearch" placeholder="Начните вводить..." style="margin-bottom:8px;width:100%">
+    <div id="taskAddrList" style="max-height:200px;overflow-y:auto;margin-bottom:12px"></div>
+    <input type="hidden" id="taskAddrId">
+    <label>Описание</label>
+    <textarea id="taskDesc" placeholder="Что нужно сделать..." style="min-height:100px;margin-bottom:16px;width:100%"></textarea>
+    <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeCreateTaskModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="createTask()" style="flex:1;margin:0">Создать</button></div>
+  </div>
+</div>
+
+<!-- Модалка: Закрытие задания -->
+<div class="modal-overlay" id="closeTaskModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeCloseTaskModal()">&times;</button>
+    <h3>🔒 Закрытие задания №<span id="closeTaskId"></span></h3>
+    <div class="status-options">
+      <div class="status-option" data-reason="Сделано" onclick="selectCloseReason(this, 'Сделано')"><label>✅ Сделано</label></div>
+      <div class="status-option" data-reason="Неактуально" onclick="selectCloseReason(this, 'Неактуально')"><label> Неактуально</label></div>
+      <div class="status-option" data-reason="На переделку" onclick="selectCloseReason(this, 'На переделку')"><label>🔄 На переделку</label></div>
+      <div class="status-option" data-reason="Проверить" onclick="selectCloseReason(this, 'Проверить')"><label>👁 Проверить</label></div>
+      <div class="status-option" data-reason="custom" onclick="selectCloseReason(this, 'custom')"><label>✏️ Свой статус</label><input id="customReason" type="text" placeholder="Введите свой статус..." style="margin-top:8px;display:none;width:100%"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px"><button class="btn secondary" onclick="closeCloseTaskModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="confirmCloseTask()" style="flex:1;margin:0;background:#10b981">Закрыть задание</button></div>
+  </div>
+</div>
+
+<!-- Модалка: Создание записи мониторинга -->
+<div class="modal-overlay" id="monitoringModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeMonitoringModal()">&times;</button>
+    <h3> Новая запись мониторинга</h3>
+    <label>Город</label>
+    <select id="monCity" style="margin-bottom:12px;width:100%"><option value="">— выберите город —</option></select>
+    <label>Адрес</label>
+    <input id="monAddrSearch" placeholder="Начните вводить..." style="margin-bottom:8px;width:100%">
+    <div id="monAddrList" style="max-height:200px;overflow-y:auto;margin-bottom:12px"></div>
+    <input type="hidden" id="monAddrId">
+    <label>Что видите?</label>
+    <textarea id="monText" placeholder="Опишите состояние экрана, повреждения..." style="min-height:100px;margin-bottom:16px;width:100%"></textarea>
+    <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeMonitoringModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="createMonitoring()" style="flex:1;margin:0;background:#0ea5e9">Отправить</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/client.js?v=106"></script>
+</body></html>

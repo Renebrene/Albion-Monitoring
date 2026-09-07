@@ -1,0 +1,364 @@
+const API = (path, opts={}) => fetch(path, opts).then(async r => {
+  if(r.status === 401){ localStorage.clear(); location.href = "/"; }
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.detail || "Ошибка");
+  return data;
+});
+const authHeaders = () => ({ "Authorization": "Bearer " + localStorage.getItem("token") });
+const toast = (msg, err=false) => {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = "toast" + (err?" err":"");
+  t.style.display = "block";
+  setTimeout(()=>t.style.display="none", 3000);
+};
+
+let currentStatus = "open";
+let currentRole = null;
+let myLogin = "";
+let closeTaskId = null;
+
+const fmtDate = iso => {
+  if(!iso) return "";
+  const d = new Date(iso + (iso.includes("T")?"":"Z"));
+  return d.toLocaleString("ru-RU", {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+};
+
+// Модалки
+window.closeSettingsModal = () => document.getElementById("settingsModal").classList.remove("active");
+window.closeCreateTaskModal = () => document.getElementById("createTaskModal").classList.remove("active");
+window.closeCloseTaskModal = () => {
+  document.getElementById("closeTaskModal").classList.remove("active");
+  closeTaskId = null;
+};
+
+["settingsModal","createTaskModal","closeTaskModal"].forEach(id => {
+  document.getElementById(id).addEventListener("click", e => {
+    if(e.target.id === id) e.target.classList.remove("active");
+  });
+});
+
+// Выбор статуса закрытия
+document.querySelectorAll(".status-option").forEach(opt => {
+  opt.addEventListener("click", () => {
+    document.querySelectorAll(".status-option").forEach(o => o.classList.remove("selected"));
+    opt.classList.add("selected");
+    const radio = opt.querySelector("input[type=radio]");
+    radio.checked = true;
+    document.getElementById("customReason").style.display = radio.value === "custom" ? "block" : "none";
+  });
+});
+
+const renderTasks = (tasks) => {
+  const list = document.getElementById("taskList");
+  if(!tasks.length){ list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:40px">Заданий нет</div>'; return; }
+  
+  list.innerHTML = tasks.map(t => {
+    const urgMap = { new:{cls:"urg-new", text:"Новое"}, warning:{cls:"urg-warning", text:"24ч+"}, overdue:{cls:"urg-overdue", text:"Просрочено"}, done:{cls:"urg-done", text:"Выполнено"} };
+    const u = urgMap[t.urgency] || urgMap.done;
+    const isImportant = t.is_important === 1;
+    
+    let adminActions = "";
+    if(currentRole === "admin"){
+      adminActions = `
+        <div class="task-actions">
+          <button class="btn btn-important ${isImportant?'active':''}" onclick="toggleImportant(${t.id}, ${!isImportant})">
+            ${isImportant ? '⭐ Важное' : '☆ Отметить важным'}
+          </button>
+          ${t.status === 'open' ? `<button class="btn btn-close" onclick="openCloseModal(${t.id})">🔒 Закрыть</button>` : ''}
+          <button class="btn btn-delete" onclick="deleteTask(${t.id})"> Удалить</button>
+        </div>
+      `;
+    }
+    
+    let closeReasonHtml = "";
+    if(t.close_reason){
+      closeReasonHtml = `<div class="close-reason">📌 ${t.close_reason.replace(/</g,"&lt;")}</div>`;
+    }
+    
+    return `
+      <div class="task-card ${isImportant ? 'important' : ''}" id="task-${t.id}">
+        <div class="task-header">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="urg-badge ${u.cls}">${u.text} · №${t.id}</span>
+            ${isImportant ? '<span style="font-size:16px">⭐</span>' : ''}
+          </div>
+        </div>
+        <div class="task-meta">
+          <div class="city">${t.city}</div>
+          <div class="addr">${t.address_name}</div>
+          <div class="task-desc">${t.description.replace(/</g,"&lt;")}</div>
+          ${closeReasonHtml}
+          <div style="font-size:12px;color:var(--muted);margin:8px 0">📅 ${fmtDate(t.created_at)} · 👤 ${t.author}</div>
+          ${adminActions}
+        </div>
+        <div class="chat-box" id="chat-${t.id}">
+          <div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">Загрузка...</div>
+        </div>
+        <div class="chat-input-area">
+          <textarea id="input-${t.id}" placeholder="Напишите ответ..."></textarea>
+          <button class="btn" onclick="sendComment(${t.id})">➤</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  tasks.forEach(t => loadChat(t.id));
+};
+
+const loadChat = async (taskId) => {
+  try {
+    const comments = await API(`/api/tasks/${taskId}/comments`, {headers: authHeaders()});
+    const chatBox = document.getElementById(`chat-${taskId}`);
+    if(!comments.length) {
+      chatBox.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">Пока нет ответов</div>';
+      return;
+    }
+    chatBox.innerHTML = comments.map(c => {
+      const isMe = c.author === myLogin;
+      const isDirector = c.is_director_comment === true;
+      const isDirector = c.is_director_comment === true;
+      const mediaHtml = c.media && c.media.length ? `
+        <div class="chat-media">
+          ${c.media.map(m => {
+            const isVideo = m.endsWith('.mp4') || m.endsWith('.mov') || m.endsWith('.webm');
+            return isVideo ? `<video src="/uploads/${m}" controls></video>` : `<img src="/uploads/${m}" onclick="window.open('/uploads/${m}','_blank')">`;
+          }).join("")}
+        </div>` : "";
+      return `
+        <div class="chat-msg ${isMe ? 'me' : ''} ${isDirector ? 'director' : ''}">
+          <div class="chat-author">${c.author}</div>
+          <div class="chat-bubble">
+            ${c.text.replace(/\n/g, "<br>")}
+            ${mediaHtml}
+            <div class="chat-time">${fmtDate(c.created_at)}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+    chatBox.scrollTop = chatBox.scrollHeight;
+  } catch(e) {
+    const box = document.getElementById(`chat-${taskId}`);
+    if(box) box.innerHTML = '<div style="color:var(--err);padding:10px">Ошибка загрузки</div>';
+  }
+};
+
+window.sendComment = async (taskId) => {
+  const input = document.getElementById(`input-${taskId}`);
+  const text = input.value.trim();
+  if(!text) return;
+  const btn = input.nextElementSibling;
+  btn.disabled = true; btn.textContent = "...";
+  try {
+    await API("/api/comments", {
+      method: "POST", headers: {"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({ task_id: taskId, text: text, media: [] })
+    });
+    input.value = "";
+    await loadChat(taskId);
+    loadTasks();
+  } catch(e) { toast(e.message, true); }
+  btn.disabled = false; btn.textContent = "➤";
+};
+
+const loadTasks = async () => {
+  const tasks = await API(`/api/tasks?status=${currentStatus}`, {headers: authHeaders()});
+  renderTasks(tasks);
+};
+
+// ===== АДМИН =====
+document.getElementById("adminSettingsBtn").onclick = () => {
+  document.getElementById("settingsModal").classList.add("active");
+  loadUsers(); loadMediaSettings();
+};
+
+document.getElementById("addTaskBtn").onclick = async () => {
+  document.getElementById("createTaskModal").classList.add("active");
+  const cities = await API("/api/cities");
+  const sel = document.getElementById("taskCity");
+  sel.innerHTML = '<option value="">— город —</option>';
+  cities.forEach(c => { const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
+  document.getElementById("taskAddrId").value = "";
+  document.getElementById("taskAddrSearch").value = "";
+  document.getElementById("taskAddrList").innerHTML = "";
+  document.getElementById("taskDesc").value = "";
+};
+
+window.saveMediaSettings = async () => {
+  try {
+    await API("/api/settings", { method:"PUT", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({key:"photos_enabled", value: document.getElementById("togglePhotos").checked?"1":"0"}) });
+    await API("/api/settings", { method:"PUT", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({key:"videos_enabled", value: document.getElementById("toggleVideos").checked?"1":"0"}) });
+    toast("✓ Сохранено");
+  } catch(e) { toast(e.message, true); }
+};
+
+const loadMediaSettings = async () => {
+  try {
+    const s = await API("/api/settings", {headers: authHeaders()});
+    document.getElementById("togglePhotos").checked = s.photos_enabled;
+    document.getElementById("toggleVideos").checked = s.videos_enabled;
+  } catch(e){}
+};
+
+const loadUsers = async () => {
+  try {
+    const users = await API("/api/users", {headers: authHeaders()});
+    const roleNames = {"admin":"Админ","service":"Сервис","director":"Руководитель"};
+    document.getElementById("usersList").innerHTML = users.map(u => `
+      <div class="user-row">
+        <span style="flex:1;min-width:150px"><b>${u.login}</b> <span style="color:var(--muted);font-size:12px">(${roleNames[u.role]})</span></span>
+        <input id="pwd_${u.id}" type="password" placeholder="Новый пароль" style="flex:1;min-width:150px;margin:0;padding:8px;font-size:13px">
+        <button class="btn secondary" style="width:auto;margin:0;padding:8px 16px;font-size:13px" onclick="changePassword(${u.id})">Сменить</button>
+      </div>
+    `).join("");
+  } catch(e){}
+};
+
+window.addUser = async () => {
+  const login = document.getElementById("newLogin").value.trim();
+  const password = document.getElementById("newPassword").value.trim();
+  const role = document.getElementById("newRole").value;
+  if(!login || !password){ toast("Заполните поля", true); return; }
+  try {
+    await API("/api/users", { method:"POST", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({login, password, role}) });
+    toast("✓ Добавлен");
+    document.getElementById("newLogin").value = "";
+    document.getElementById("newPassword").value = "";
+    loadUsers();
+  } catch(e) { toast(e.message, true); }
+};
+
+window.changePassword = async (userId) => {
+  const pwd = document.getElementById(`pwd_${userId}`).value.trim();
+  if(!pwd){ toast("Введите пароль", true); return; }
+  try {
+    await API(`/api/users/${userId}/password`, { method:"PUT", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({new_password: pwd}) });
+    toast("✓ Пароль изменён");
+    document.getElementById(`pwd_${userId}`).value = "";
+  } catch(e) { toast(e.message, true); }
+};
+
+// ===== НОВЫЕ ФУНКЦИИ: ВАЖНОЕ И ЗАКРЫТИЕ =====
+
+window.toggleImportant = async (taskId, value) => {
+  try {
+    await API(`/api/tasks/${taskId}`, {
+      method: "PATCH", headers: {"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({ is_important: value })
+    });
+    toast(value ? "⭐ Задание помечено как важное" : "☆ Метка важности снята");
+    loadTasks();
+  } catch(e) { toast(e.message, true); }
+};
+
+window.openCloseModal = (taskId) => {
+  closeTaskId = taskId;
+  document.getElementById("closeTaskId").textContent = taskId;
+  document.getElementById("closeTaskModal").classList.add("active");
+  // Сброс выбора
+  document.querySelectorAll(".status-option").forEach(o => o.classList.remove("selected"));
+  document.querySelector('.status-option[data-reason="Сделано"]').classList.add("selected");
+  document.querySelector('input[name="closeStatus"][value="Сделано"]').checked = true;
+  document.getElementById("customReason").value = "";
+  document.getElementById("customReason").style.display = "none";
+};
+
+window.confirmCloseTask = async () => {
+  if(!closeTaskId) return;
+  const selected = document.querySelector('input[name="closeStatus"]:checked');
+  let reason = selected.value;
+  if(reason === "custom"){
+    reason = document.getElementById("customReason").value.trim();
+    if(!reason){ toast("Введите свой статус", true); return; }
+  }
+  try {
+    await API(`/api/tasks/${closeTaskId}`, {
+      method: "PATCH", headers: {"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({ status: "done", close_reason: reason })
+    });
+    toast(`✓ Задание закрыто: ${reason}`);
+    closeCloseTaskModal();
+    loadTasks();
+  } catch(e) { toast(e.message, true); }
+};
+
+window.deleteTask = async (id) => {
+  if(!confirm("Удалить задание и всю переписку?")) return;
+  try {
+    await API(`/api/tasks/${id}`, {method:"DELETE", headers: authHeaders()});
+    toast("Удалено");
+    loadTasks();
+  } catch(e) { toast(e.message, true); }
+};
+
+// Создание задания
+window.createTask = async () => {
+  const addrId = document.getElementById("taskAddrId").value;
+  const desc = document.getElementById("taskDesc").value.trim();
+  if(!addrId){ toast("Выберите адрес", true); return; }
+  if(!desc){ toast("Введите описание", true); return; }
+  try {
+    await API("/api/tasks", {
+      method: "POST", headers: {"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({address_id: Number(addrId), description: desc})
+    });
+    toast("✓ Задание создано");
+    closeCreateTaskModal();
+    loadTasks();
+  } catch(e) { toast(e.message, true); }
+};
+
+document.getElementById("taskCity").addEventListener("change", () => {
+  document.getElementById("taskAddrId").value = "";
+  document.getElementById("taskAddrSearch").value = "";
+  document.getElementById("taskAddrList").innerHTML = "";
+});
+
+document.getElementById("taskAddrSearch").addEventListener("input", async e => {
+  const city = document.getElementById("taskCity").value;
+  if(!city) return;
+  const rows = await API(`/api/addresses?city=${encodeURIComponent(city)}&q=${encodeURIComponent(e.target.value)}`);
+  document.getElementById("taskAddrList").innerHTML = rows.map(r => 
+    `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%" 
+      onclick="pickTaskAddr(${r.id}, '${r.address_name.replace(/'/g, "\\'")}')">${r.address_name}</button>`
+  ).join("");
+});
+
+window.pickTaskAddr = (id, name) => {
+  document.getElementById("taskAddrId").value = id;
+  document.getElementById("taskAddrSearch").value = name;
+  document.getElementById("taskAddrList").innerHTML = "";
+};
+
+document.getElementById("statusFilter").addEventListener("click", e => {
+  if(!e.target.dataset.status) return;
+  currentStatus = e.target.dataset.status;
+  [...document.querySelectorAll("#statusFilter .chip")].forEach(c=>c.classList.remove("active"));
+  e.target.classList.add("active");
+  loadTasks();
+});
+
+(async () => {
+  const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
+  if(!me){ location.href = "/"; return; }
+  currentRole = me.role;
+  myLogin = me.login;
+  document.getElementById("whoami").textContent = me.login + " (" + me.role_label + ")";
+  
+  if(currentRole === "admin"){
+    document.getElementById("adminSettingsBtn").style.display = "inline-block";
+    document.getElementById("addTaskBtn").style.display = "inline-flex";
+  } else if(currentRole === "service"){
+    document.getElementById("serverLink").style.display = "none";
+  } else if(currentRole === "director"){
+    document.getElementById("clientLink").style.display = "none";
+  }
+  
+
+// Обработчик кнопки "Выйти"
+document.getElementById("logout").onclick = () => { 
+  localStorage.clear(); 
+  location.href = "/"; 
+};
+
+  loadTasks();
+})();

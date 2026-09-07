@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>АЛЬБИОН · Задания</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.task-card { 
+    background: var(--card); 
+    border: 2px solid #cbd5e1; /* Более толстая и заметная рамка */
+    border-radius: 12px; 
+    margin-bottom: 24px; /* Увеличенный отступ между карточками */
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); /* Лёгкая тень для объёма */
+    overflow: hidden; 
+    transition: all 0.2s ease; 
+}
+.task-card:hover {
+    border-color: #94a3b8;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+}
+.task-card.important { border: 2px solid #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+.task-header { padding: 14px; background: #f8fafc; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.urg-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; }
+.urg-new { background: #dcfce7; color: #166534; }
+.urg-warning { background: #fed7aa; color: #9a3412; }
+.urg-overdue { background: #fecaca; color: #991b1b; }
+.urg-done { background: #e2e8f0; color: #475569; }
+.close-reason { display: inline-block; margin-top: 6px; padding: 4px 10px; background: #fef3c7; color: #92400e; border-radius: 6px; font-size: 12px; font-weight: 600; }
+.task-meta { padding: 14px 14px 0; }
+.task-meta .city { font-size: 11px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+.task-meta .addr { font-size: 16px; font-weight: 700; margin: 4px 0 8px; }
+.task-desc { font-size: 14px; line-height: 1.5; margin: 0 0 12px; padding: 10px; background: #fff; border-left: 3px solid var(--primary); border-radius: 6px; }
+
+.chat-box { padding: 0 14px 14px; max-height: 400px; overflow-y: auto; border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.chat-msg { margin-bottom: 12px; display: flex; flex-direction: column; }
+.chat-msg.me { align-items: flex-end; }
+.chat-bubble { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
+.chat-msg:not(.me) .chat-bubble { background: #f1f5f9; color: var(--ink); border-bottom-left-radius: 4px; }
+.chat-msg.me .chat-bubble { background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
+.chat-author { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+.chat-msg.me .chat-author { text-align: right; color: rgba(255,255,255,0.7); }
+.chat-time { font-size: 10px; opacity: 0.7; margin-top: 4px; text-align: right; }
+.chat-media { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.chat-media img, .chat-media video { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; }
+
+.chat-input-area { padding: 12px 14px; background: #f8fafc; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
+.chat-input-area textarea { flex: 1; min-height: 40px; max-height: 100px; margin: 0; padding: 8px 12px; font-size: 14px; }
+.chat-input-area .btn { width: auto; margin: 0; padding: 10px 16px; height: 40px; }
+
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.6); z-index: 1000; align-items: center; justify-content: center; padding: 16px; }
+.modal-overlay.active { display: flex; }
+.modal-box { background: #fff; border-radius: 16px; padding: 24px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+.modal-box h3 { margin: 0 0 20px 0; font-size: 18px; }
+.modal-box .close-btn { float: right; background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); padding: 0; width: 32px; height: 32px; line-height: 1; }
+
+.user-row { display: flex; gap: 8px; align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+
+/* Яркая кнопка добавления задания */
+.add-task-btn { 
+  background: #10b981; 
+  color: #fff; 
+  border: none; 
+  padding: 10px 20px; 
+  border-radius: 10px; 
+  font-weight: 700; 
+  cursor: pointer; 
+  display: inline-flex; 
+  align-items: center; 
+  gap: 8px;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4);
+  transition: all 0.2s;
+}
+.add-task-btn:hover { 
+  background: #059669; 
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.5);
+}
+
+.task-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.task-actions .btn { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; }
+.btn-important { background: #fbbf24; color: #78350f; }
+.btn-important.active { background: #f59e0b; color: #fff; }
+.btn-close { background: #10b981; color: #fff; }
+.btn-delete { background: #ef4444; color: #fff; }
+
+.status-options { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+.status-option { padding: 12px; border: 2px solid var(--border); border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+.status-option:hover { border-color: var(--primary); background: #f8fafc; }
+.status-option.selected { border-color: var(--primary); background: #eff6ff; }
+.status-option label { display: flex; align-items: center; gap: 10px; cursor: pointer; margin: 0; font-size: 14px; }
+
+.chat-msg.director .chat-bubble { 
+    background: #fef3c7; 
+    color: #92400e; 
+    border: 1px solid #fbbf24;
+    border-bottom-right-radius: 4px;
+}
+.chat-msg.director .chat-author { 
+    color: #d97706; 
+    font-weight: 700;
+}
+.chat-msg.director .chat-author::before {
+    content: "💬 ";
+}
+</style>
+</head><body>
+<header class="topbar">
+  <h1>АЛЬБИОН · <span class="role-tag">Задания</span></h1>
+  <div class="right">
+    <!-- Кнопка добавления задания — ПЕРВОЙ, яркая зелёная -->
+    <button class="add-task-btn" id="addTaskBtn" style="display:none"> Добавить задание</button>
+    <a href="/client" class="btn ghost" id="clientLink">Мониторинг</a>
+    <a href="/server" class="btn ghost" id="serverLink">Отчёты</a>
+    <button class="btn ghost" id="adminSettingsBtn" style="display:none">⚙️ Настройки</button>
+    <span id="whoami" style="font-size:12px;opacity:0.9"></span>
+    <button class="btn ghost" id="logout">Выйти</button>
+  </div>
+</header>
+
+<div class="container wide">
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;align-items:center;justify-content:space-between">
+    <div id="statusFilter" style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn ghost chip active" data-status="open" style="color:var(--ink);border-color:var(--border)">Открытые</button>
+      <button class="btn ghost chip" data-status="done" style="color:var(--ink);border-color:var(--border)">Выполненные</button>
+      <button class="btn ghost chip" data-status="all" style="color:var(--ink);border-color:var(--border)">Все</button>
+    </div>
+  </div>
+  <div id="taskList"></div>
+</div>
+
+<!-- Модалка настроек -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal-box">
+    <button class="close-btn" onclick="closeSettingsModal()">&times;</button>
+    <h3>⚙️ Настройки Администратора</h3>
+    <h4 style="margin:0 0 12px 0;font-size:15px;border-bottom:1px solid var(--border);padding-bottom:8px">Управление медиа</h4>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:20px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
+        <input type="checkbox" id="togglePhotos" style="width:auto;transform:scale(1.2)"> Разрешить фото
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
+        <input type="checkbox" id="toggleVideos" style="width:auto;transform:scale(1.2)"> Разрешить видео
+      </label>
+    </div>
+    <button class="btn" style="margin-bottom:24px" onclick="saveMediaSettings()">Сохранить</button>
+    <h4 style="margin:0 0 12px 0;font-size:15px;border-bottom:1px solid var(--border);padding-bottom:8px">Пользователи</h4>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <input id="newLogin" placeholder="Логин" style="flex:1;min-width:120px;margin:0">
+      <input id="newPassword" type="password" placeholder="Пароль" style="flex:1;min-width:120px;margin:0">
+      <select id="newRole" style="flex:1;min-width:120px;margin:0">
+        <option value="service">Сервис</option>
+        <option value="director">Руководитель</option>
+        <option value="admin">Админ</option>
+      </select>
+      <button class="btn" style="width:auto;margin:0;padding:10px 20px" onclick="addUser()">Добавить</button>
+    </div>
+    <div id="usersList"></div>
+  </div>
+</div>
+
+<!-- Модалка создания задания -->
+<div class="modal-overlay" id="createTaskModal">
+  <div class="modal-box">
+    <button class="close-btn" onclick="closeCreateTaskModal()">&times;</button>
+    <h3>📋 Новое задание</h3>
+    <label>Город</label>
+    <select id="taskCity" style="margin-bottom:12px"><option value="">— выберите город —</option></select>
+    <label>Адрес</label>
+    <input id="taskAddrSearch" placeholder="Начните вводить..." style="margin-bottom:8px">
+    <div id="taskAddrList" style="max-height:200px;overflow-y:auto;margin-bottom:12px"></div>
+    <input type="hidden" id="taskAddrId">
+    <label>Описание</label>
+    <textarea id="taskDesc" placeholder="Что нужно сделать..." style="min-height:100px;margin-bottom:16px"></textarea>
+    <div style="display:flex;gap:8px">
+      <button class="btn secondary" onclick="closeCreateTaskModal()" style="flex:1;margin:0">Отмена</button>
+      <button class="btn" onclick="createTask()" style="flex:1;margin:0">Создать</button>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка закрытия задания -->
+<div class="modal-overlay" id="closeTaskModal">
+  <div class="modal-box">
+    <button class="close-btn" onclick="closeCloseTaskModal()">&times;</button>
+    <h3>🔒 Закрытие задания №<span id="closeTaskId"></span></h3>
+    <p style="color:var(--muted);font-size:14px;margin-bottom:16px">Выберите статус закрытия:</p>
+    <div class="status-options">
+      <div class="status-option" data-reason="Сделано">
+        <label><input type="radio" name="closeStatus" value="Сделано" checked> ✅ Сделано</label>
+      </div>
+      <div class="status-option" data-reason="Неактуально">
+        <label><input type="radio" name="closeStatus" value="Неактуально"> ❌ Неактуально</label>
+      </div>
+      <div class="status-option" data-reason="На переделку">
+        <label><input type="radio" name="closeStatus" value="На переделку"> 🔄 На переделку</label>
+      </div>
+      <div class="status-option" data-reason="Проверить">
+        <label><input type="radio" name="closeStatus" value="Проверить">  Проверить</label>
+      </div>
+      <div class="status-option" data-reason="custom">
+        <label><input type="radio" name="closeStatus" value="custom"> ️ Свой статус</label>
+        <input id="customReason" type="text" placeholder="Введите свой статус..." style="margin-top:8px;display:none">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px">
+      <button class="btn secondary" onclick="closeCloseTaskModal()" style="flex:1;margin:0">Отмена</button>
+      <button class="btn" onclick="confirmCloseTask()" style="flex:1;margin:0;background:#10b981">Закрыть задание</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/tasks.js"></script>
+</body></html>

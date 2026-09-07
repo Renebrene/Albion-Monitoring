@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>АЛЬБИОН · Отчёты</title>
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
+<header class="topbar">
+  <h1>АЛЬБИОН · <span class="role-tag">Отчёты</span></h1>
+  <div class="right">
+    <a href="/tasks" class="btn ghost">Задания</a>
+    <span id="whoami" style="font-size:12px;opacity:0.9"></span>
+    <button class="btn ghost" id="logout">Выйти</button>
+  </div>
+</header>
+
+<div class="container wide">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+    <select id="fCity" style="flex:1;min-width:120px"><option value="">Все города</option></select>
+    <select id="fManuf" style="flex:1;min-width:120px"><option value="">Все производители</option></select>
+    <input id="fFrom" type="date" style="flex:1;min-width:120px">
+    <input id="fTo" type="date" style="flex:1;min-width:120px">
+    <button class="btn" style="flex:0 0 auto;margin-top:0;width:auto;padding:12px 20px" onclick="loadReports()">🔍</button>
+    <button class="btn secondary" style="flex:0 0 auto;margin-top:0;width:auto;padding:12px 20px" onclick="exportExcel()">📥 Excel</button>
+  </div>
+  
+  <div class="sort-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" id="sortRow">
+    <button class="btn ghost chip active" data-sort="desc" style="color:var(--ink);border-color:var(--border)">Сначала новые</button>
+    <button class="btn ghost chip" data-sort="asc" style="color:var(--ink);border-color:var(--border)">Сначала старые</button>
+    <button class="btn ghost chip" data-sort="city" style="color:var(--ink);border-color:var(--border)">По городу</button>
+    <button class="btn ghost chip" data-sort="manufacturer" style="color:var(--ink);border-color:var(--border)">По производителю</button>
+  </div>
+
+  <div id="feed" class="grid-2"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/server.js"></script>
+</body></html>
