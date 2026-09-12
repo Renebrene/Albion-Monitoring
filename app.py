@@ -91,6 +91,7 @@ class ReportIn(BaseModel):
 class TaskIn(BaseModel):
     address_id: int
     description: str
+    is_important: bool = False
 
 
 class SettingIn(BaseModel):
@@ -406,7 +407,7 @@ def list_reports(
 # ---------- Задания ----------
 @app.post("/api/tasks")
 def create_task(data: TaskIn, request: Request):
-    user = require_any(request, ["admin"])
+    user = require_any(request, ["admin", "director"])
     with get_db() as conn:
         addr = conn.execute(
             "SELECT id FROM addresses WHERE id = ? AND active = 1",
@@ -418,8 +419,34 @@ def create_task(data: TaskIn, request: Request):
             raise HTTPException(status_code=400, detail="Пустое описание")
 
         cursor = conn.execute(
-            "INSERT INTO tasks (address_id, created_by, description) VALUES (?, ?, ?)",
-            (data.address_id, user["sub"], data.description.strip()),
+            """INSERT INTO tasks
+               (address_id, created_by, created_by_role,
+                description, is_important, workflow_status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                data.address_id,
+                user["sub"],
+                user["role"],
+                data.description.strip(),
+                1 if data.is_important else 0,
+                "open",
+            ),
+        )
+
+        task_id = cursor.lastrowid
+
+        # Фиксируем начальное состояние в истории.
+        conn.execute(
+            """
+            INSERT INTO task_status_history
+                (task_id, status, changed_by, changed_at, comment)
+            VALUES (?, 'open', ?, CURRENT_TIMESTAMP, ?)
+            """,
+            (
+                task_id,
+                user["sub"],
+                "Создание задания",
+            ),
         )
         task_id = cursor.lastrowid
     return {"ok": True, "task_id": task_id}
@@ -440,6 +467,7 @@ def list_tasks(
         sql = """
             SELECT t.id, t.description, t.status, t.created_at, t.closed_at,
                    t.is_important, t.close_reason,
+                   t.created_by_role, t.workflow_status,
                    a.city, a.address_name, a.manufacturer,
                    u.login AS author,
                    cu.login AS closed_by_login
@@ -486,6 +514,322 @@ def list_tasks(
                     task["urgency"] = "overdue"
             tasks.append(task)
     return tasks
+
+
+
+# ==========================================================
+#                  WORKFLOW ЗАДАНИЙ
+# ==========================================================
+
+TASK_WORKFLOW_STATUSES = {
+    "open": "Открыто",
+    "pending_review": "На проверке",
+    "completed": "Выполнено",
+    "rework": "На доработке",
+    "closed": "Отменено",
+}
+
+
+def get_task_for_workflow(conn, task_id: int):
+    task = conn.execute(
+        """
+        SELECT
+            id,
+            address_id,
+            created_by,
+            created_by_role,
+            workflow_status,
+            status,
+            description
+        FROM tasks
+        WHERE id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Задание не найдено"
+        )
+
+    return task
+
+
+def add_task_status_history(
+    conn,
+    task_id: int,
+    status: str,
+    user_id: int,
+    comment: str = None,
+):
+    conn.execute(
+        """
+        INSERT INTO task_status_history
+            (task_id, status, changed_by, changed_at, comment)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+        """,
+        (
+            task_id,
+            status,
+            user_id,
+            comment,
+        ),
+    )
+
+
+def set_task_workflow_status(
+    conn,
+    task,
+    new_status: str,
+    user_id: int,
+    comment: str = None,
+):
+    old_status = task["workflow_status"]
+
+    if old_status == new_status:
+        raise HTTPException(
+            status_code=400,
+            detail="Задание уже имеет этот статус"
+        )
+
+    conn.execute(
+        """
+        UPDATE tasks
+        SET workflow_status = ?
+        WHERE id = ?
+        """,
+        (
+            new_status,
+            task["id"],
+        ),
+    )
+
+    add_task_status_history(
+        conn,
+        task["id"],
+        new_status,
+        user_id,
+        comment,
+    )
+
+
+# ----------------------------------------------------------
+# Сервис: Готово
+# open/rework -> pending_review
+# ----------------------------------------------------------
+
+@app.post("/api/tasks/{task_id}/complete")
+def complete_task(task_id: int, request: Request):
+    user = require_any(request, ["service"])
+
+    with get_db() as conn:
+        task = get_task_for_workflow(conn, task_id)
+
+        if task["workflow_status"] not in ("open", "rework"):
+            raise HTTPException(
+                status_code=400,
+                detail="Это задание сейчас нельзя отправить на проверку"
+            )
+
+        set_task_workflow_status(
+            conn,
+            task,
+            "pending_review",
+            user["sub"],
+            "Сервис отправил задание на проверку",
+        )
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "workflow_status": "pending_review",
+    }
+
+
+# ----------------------------------------------------------
+# Проверка: Выполнено
+#
+# Админ может проверить любое задание.
+# Директор может проверить только задание, созданное директором.
+# ----------------------------------------------------------
+
+@app.post("/api/tasks/{task_id}/approve")
+def approve_task(task_id: int, request: Request):
+    user = require_any(request, ["admin", "director"])
+
+    with get_db() as conn:
+        task = get_task_for_workflow(conn, task_id)
+
+        if task["workflow_status"] != "pending_review":
+            raise HTTPException(
+                status_code=400,
+                detail="Задание не находится на проверке"
+            )
+
+        set_task_workflow_status(
+            conn,
+            task,
+            "completed",
+            user["sub"],
+            "Задание принято",
+        )
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "workflow_status": "completed",
+    }
+
+
+# ----------------------------------------------------------
+# На доработку
+# pending_review -> rework
+# ----------------------------------------------------------
+
+@app.post("/api/tasks/{task_id}/rework")
+def rework_task(task_id: int, request: Request):
+    user = require_any(request, ["admin", "director"])
+
+    with get_db() as conn:
+        task = get_task_for_workflow(conn, task_id)
+
+        if task["workflow_status"] != "pending_review":
+            raise HTTPException(
+                status_code=400,
+                detail="Задание не находится на проверке"
+            )
+
+        set_task_workflow_status(
+            conn,
+            task,
+            "rework",
+            user["sub"],
+            "Задание отправлено на доработку",
+        )
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "workflow_status": "rework",
+    }
+
+
+# ----------------------------------------------------------
+# Закрытие
+#
+# Админ может закрыть любое задание.
+# Директор может закрыть только своё задание.
+# Закрывать можно open/rework.
+# ----------------------------------------------------------
+
+@app.post("/api/tasks/{task_id}/close")
+def close_task(task_id: int, request: Request):
+    user = require_any(request, ["admin", "director"])
+
+    with get_db() as conn:
+        task = get_task_for_workflow(conn, task_id)
+
+        if task["workflow_status"] not in ("open", "rework"):
+            raise HTTPException(
+                status_code=400,
+                detail="Это задание сейчас нельзя закрыть"
+            )
+
+        if (
+            user["role"] == "director"
+            and task["created_by_role"] != "director"
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Директор может закрывать только свои задания"
+            )
+
+        set_task_workflow_status(
+            conn,
+            task,
+            "closed",
+            user["sub"],
+            "Задание закрыто",
+        )
+
+        # Сохраняем старую модель status для совместимости.
+        conn.execute(
+            """
+            UPDATE tasks
+            SET
+                status = 'done',
+                closed_at = CURRENT_TIMESTAMP,
+                closed_by = ?
+            WHERE id = ?
+            """,
+            (
+                user["sub"],
+                task_id,
+            ),
+        )
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "workflow_status": "closed",
+    }
+
+
+# ----------------------------------------------------------
+# История статусов задания
+# ----------------------------------------------------------
+
+@app.get("/api/tasks/{task_id}/status-history")
+def task_status_history(task_id: int, request: Request):
+    get_current_user(request)
+
+    with get_db() as conn:
+        task = conn.execute(
+            "SELECT id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail="Задание не найдено"
+            )
+
+        rows = conn.execute(
+            """
+            SELECT
+                h.id,
+                h.task_id,
+                h.status,
+                h.changed_at,
+                h.comment,
+                u.login AS changed_by_login,
+                u.role AS changed_by_role
+            FROM task_status_history h
+            JOIN users u ON u.id = h.changed_by
+            WHERE h.task_id = ?
+            ORDER BY h.changed_at ASC, h.id ASC
+            """,
+            (task_id,),
+        ).fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "status": row["status"],
+                "status_label": TASK_WORKFLOW_STATUSES.get(
+                    row["status"],
+                    row["status"],
+                ),
+                "changed_at": row["changed_at"],
+                "comment": row["comment"],
+                "changed_by": row["changed_by_login"],
+                "changed_by_role": row["changed_by_role"],
+            }
+            for row in rows
+        ]
 
 
 @app.delete("/api/tasks/{task_id}")
@@ -718,19 +1062,22 @@ def get_comments(task_id: int, request: Request):
 def add_comment(data: CommentIn, request: Request):
     user = get_current_user(request)
     import json
+    if user["role"] == "director":
+        raise HTTPException(
+            status_code=403,
+            detail="Директор пишет только отдельные комментарии"
+        )
+
     with get_db() as conn:
-        if user["role"] == "director":
-            # Директор пишет в свою таблицу (видны всем как жёлтые)
-            conn.execute("""
-                INSERT INTO director_comments (item_type, item_id, user_id, text)
-                VALUES ('task', ?, ?, ?)
-            """, (data.task_id, user["sub"], data.text.strip()))
-        else:
-            # Остальные пишут в обычный чат
-            conn.execute("""
-                INSERT INTO comments (task_id, user_id, text, media_json)
-                VALUES (?, ?, ?, ?)
-            """, (data.task_id, user["sub"], data.text.strip(), json.dumps(data.media)))
+        conn.execute("""
+            INSERT INTO comments (task_id, user_id, text, media_json)
+            VALUES (?, ?, ?, ?)
+        """, (
+            data.task_id,
+            user["sub"],
+            data.text.strip(),
+            json.dumps(data.media)
+        ))
         
         # Автозакрытие убрано — закрывает только Админ
             
@@ -748,7 +1095,18 @@ class TaskUpdateIn(BaseModel):
 def update_task(task_id: int, data: TaskUpdateIn, request: Request):
     require_any(request, ["admin"])
     with get_db() as conn:
-        task = conn.execute("SELECT id, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        task = conn.execute(
+            """
+            SELECT
+                id,
+                status,
+                workflow_status,
+                created_by_role
+            FROM tasks
+            WHERE id = ?
+            """,
+            (task_id,),
+        ).fetchone()
         if not task:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         
@@ -761,16 +1119,56 @@ def update_task(task_id: int, data: TaskUpdateIn, request: Request):
         
         if data.status is not None:
             if data.status not in ("open", "done"):
-                raise HTTPException(status_code=400, detail="Неверный статус")
-            updates.append("status = ?")
-            params.append(data.status)
+                raise HTTPException(
+                    status_code=400,
+                    detail="Неверный статус"
+                )
+
+            current_user = get_current_user(request)
+
+            # Старый API оставляем для совместимости.
+            # Но не позволяем им обходить новый workflow.
             if data.status == "done":
+                if task["workflow_status"] not in ("open", "rework"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Используйте проверку задания для текущего workflow"
+                    )
+
+                updates.append("status = ?")
+                params.append("done")
                 updates.append("closed_at = CURRENT_TIMESTAMP")
                 updates.append("closed_by = ?")
-                params.append(get_current_user(request)["sub"])
+                params.append(current_user["sub"])
+
+                updates.append("workflow_status = ?")
+                params.append("closed")
+
+                add_task_status_history(
+                    conn,
+                    task_id,
+                    "closed",
+                    current_user["sub"],
+                    "Задание закрыто через совместимый API",
+                )
+
             else:
+                updates.append("status = ?")
+                params.append("open")
                 updates.append("closed_at = NULL")
                 updates.append("closed_by = NULL")
+
+                if task["workflow_status"] == "closed":
+                    updates.append("workflow_status = ?")
+                    params.append("open")
+
+                    add_task_status_history(
+                        conn,
+                        task_id,
+                        "open",
+                        current_user["sub"],
+                        "Задание повторно открыто через совместимый API",
+                    )
         
         if data.close_reason is not None:
             updates.append("close_reason = ?")
@@ -838,48 +1236,120 @@ def get_monitoring(address_id: int, request: Request):
 def send_monitoring(data: ReportIn, request: Request):
     """Отправить сообщение мониторинга"""
     user = get_current_user(request)
+
     with get_db() as conn:
         addr = conn.execute(
             "SELECT id FROM addresses WHERE id = ? AND active = 1",
             (data.address_id,)
         ).fetchone()
+
         if not addr:
-            raise HTTPException(status_code=400, detail="Адрес не найден")
-        if not data.text.strip():
-            raise HTTPException(status_code=400, detail="Пустой текст")
-        
+            raise HTTPException(
+                status_code=400,
+                detail="Адрес не найден"
+            )
+
+        if not data.text or not data.text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Пустой текст"
+            )
+
+        # Комментарий директора хранится отдельно
         if user["role"] == "director":
-            # Директор пишет комментарий к мониторингу
-            conn.execute(
-                "INSERT INTO director_comments (item_type, item_id, user_id, text) VALUES ('monitoring', ?, ?, ?)",
-                (data.address_id, user["sub"], data.text.strip())
-            )
-        else:
-            # Остальные создают обычную запись мониторинга
             cursor = conn.execute(
-                "INSERT INTO reports (address_id, user_id, task_id, text) VALUES (?, ?, NULL, ?)",
-                (data.address_id, user["sub"], data.text.strip())
+                """
+                INSERT INTO director_comments
+                    (item_type, item_id, user_id, text)
+                VALUES
+                    ('monitoring', ?, ?, ?)
+                """,
+                (
+                    data.address_id,
+                    user["sub"],
+                    data.text.strip()
+                )
             )
+
+            comment_id = cursor.lastrowid
+
+            return {
+                "ok": True,
+                "comment_id": comment_id,
+                "type": "director_comment"
+            }
+
+        # Обычное сообщение мониторинга
+        cursor = conn.execute(
+            """
+            INSERT INTO reports
+                (address_id, user_id, task_id, text)
+            VALUES
+                (?, ?, NULL, ?)
+            """,
+            (
+                data.address_id,
+                user["sub"],
+                data.text.strip()
+            )
+        )
+
         report_id = cursor.lastrowid
-        
-        # Привязываем медиа
+
+        # Медиа прикрепляется к обычному отчету
         if data.media:
             for temp_name in data.media:
-                if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
+
+                if (
+                    "/" in temp_name
+                    or "\\" in temp_name
+                    or ".." in temp_name
+                ):
                     continue
+
                 old_path = UPLOADS_DIR / temp_name
+
                 if not old_path.exists():
                     continue
-                ext = old_path.suffix
-                media_type = "video" if ext in VIDEO_EXTENSIONS else "photo"
-                new_name = f"m{report_id}_{uuid.uuid4().hex[:8]}{ext}"
-                old_path.rename(UPLOADS_DIR / new_name)
-                conn.execute(
-                    "INSERT INTO media (report_id, filename, media_type) VALUES (?, ?, ?)",
-                    (report_id, new_name, media_type)
+
+                ext = old_path.suffix.lower()
+
+                media_type = (
+                    "video"
+                    if ext in VIDEO_EXTENSIONS
+                    else "photo"
                 )
-    
-    return {"ok": True, "report_id": report_id}
+
+                new_name = (
+                    f"m{report_id}_"
+                    f"{uuid.uuid4().hex[:8]}"
+                    f"{ext}"
+                )
+
+                new_path = UPLOADS_DIR / new_name
+
+                old_path.rename(new_path)
+
+                conn.execute(
+                    """
+                    INSERT INTO media
+                        (report_id, filename, media_type)
+                    VALUES
+                        (?, ?, ?)
+                    """,
+                    (
+                        report_id,
+                        new_name,
+                        media_type
+                    )
+                )
+
+    return {
+        "ok": True,
+        "report_id": report_id,
+        "type": "monitoring"
+    }
+
 # ================================================
 
 
@@ -942,17 +1412,15 @@ def director_feed(request: Request):
         from datetime import datetime, timedelta
         now = datetime.utcnow()
         for item in result:
-            if item["type"] == "task" and item["status"] == "open":
-                # Проверяем, есть ли комментарии и когда был последний
-                if item["messages"]:
-                    last_msg_time = datetime.fromisoformat(item["messages"][-1]["created_at"])
-                    hours_since = (now - last_msg_time).total_seconds() / 3600
-                    item["is_overdue"] = hours_since > 24
-                else:
-                    # Если вообще нет сообщений, считаем от создания задания
-                    created_time = datetime.fromisoformat(item["created_at"])
-                    hours_since = (now - created_time).total_seconds() / 3600
-                    item["is_overdue"] = hours_since > 24
+            if (
+                item["type"] == "task"
+                and item.get("workflow_status", "open") in ("open", "rework")
+            ):
+                # Просрочка считается только от момента создания задания.
+                # Новые сообщения и комментарии директора срок НЕ продлевают.
+                created_time = datetime.fromisoformat(item["created_at"])
+                hours_since = (now - created_time).total_seconds() / 3600
+                item["is_overdue"] = hours_since > 24
             else:
                 item["is_overdue"] = False
         
@@ -983,6 +1451,11 @@ def add_director_comment(data: DirectorCommentIn, request: Request):
 # ======================================
 
 
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page(request: Request):
+    return templates.TemplateResponse("admin.html", {"request": request})
+
 @app.get("/director", response_class=HTMLResponse)
 def director_page(request: Request):
     return templates.TemplateResponse("director.html", {"request": request})
@@ -991,132 +1464,343 @@ def director_page(request: Request):
 # ========== ЕДИНАЯ ЛЕНТА (МОНИТОРИНГ + ЗАДАНИЯ) ==========
 @app.get("/api/feed")
 def get_unified_feed(request: Request):
-    """Возвращает смешанную ленту заданий и мониторинга"""
-    user = get_current_user(request)
+    """Единая лента заданий и мониторингов.
+
+    Задание = отдельная карточка по task.id.
+    Мониторинг = отдельная карточка по address_id.
+
+    ВАЖНО:
+    - messages содержит только обычные сообщения;
+    - director_comments хранится отдельно;
+    - комментарии директора не влияют на last_message_*;
+    - комментарии директора не влияют на сортировку карточек.
+    """
+    get_current_user(request)
+
+    from datetime import datetime
+    import json
+
     with get_db() as conn:
-        # 1. Получаем задания
+        result = []
+
+        # =========================================================
+        # 1. ЗАДАНИЯ
+        # =========================================================
         tasks = conn.execute("""
-            SELECT 'task' as type, t.id, t.description as text, t.created_at,
-                   a.city, a.address_name, a.manufacturer,
-                   u.login as author, t.status, t.is_important, t.close_reason
+            SELECT
+                t.id,
+                t.address_id,
+                t.description AS text,
+                t.created_at,
+                a.city,
+                a.address_name,
+                a.manufacturer,
+                u.login AS author,
+                u.role AS author_role,
+                t.status,
+                t.workflow_status,
+                t.created_by_role,
+                t.is_important,
+                t.close_reason
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
-            ORDER BY t.created_at DESC LIMIT 300
+            ORDER BY t.created_at DESC
+            LIMIT 300
         """).fetchall()
-        
-        # 2. Получаем записи мониторинга
-        monitoring = conn.execute("""
-            SELECT 'monitoring' as type, r.id, r.text, r.created_at,
-                   a.city, a.address_name, a.manufacturer,
-                   u.login as author, 'open' as status, 0 as is_important, NULL as close_reason
-            FROM reports r
-            JOIN addresses a ON a.id = r.address_id
-            JOIN users u ON u.id = r.user_id
-            WHERE r.task_id IS NULL
-            ORDER BY r.created_at DESC LIMIT 300
-        """).fetchall()
-        
-        # 3. Объединяем и сортируем по дате (сначала новые)
-        feed = []
-        for row in tasks:
-            feed.append(dict(row))
-        for row in monitoring:
-            feed.append(dict(row))
-        
-        feed.sort(key=lambda x: x["created_at"], reverse=True)
-        
-        # 4. Для каждого элемента подгружаем чат и комментарии директора
-        result = []
-        for item in feed:
-            messages = []
-            
-            if item["type"] == "task":
-                # Обычные сообщения задания
-                c_rows = conn.execute("""
-                    SELECT c.id, c.text, c.media_json, c.created_at, u.login, u.role
-                    FROM comments c JOIN users u ON u.id = c.user_id
-                    WHERE c.task_id = ? ORDER BY c.created_at ASC
-                """, (item["id"],)).fetchall()
-                for c in c_rows:
-                    import json
-                    messages.append({
-                        "id": c["id"], "text": c["text"], 
-                        "media": json.loads(c["media_json"]) if c["media_json"] else [],
-                        "created_at": c["created_at"], "author": c["login"], "role": c["role"],
-                        "is_director_comment": False
-                    })
-                
-                # Комментарии директора к заданию
-                dc_rows = conn.execute("""
-                    SELECT dc.id, dc.text, dc.created_at, u.login
-                    FROM director_comments dc JOIN users u ON u.id = dc.user_id
-                    WHERE dc.item_type = 'task' AND dc.item_id = ? ORDER BY dc.created_at ASC
-                """, (item["id"],)).fetchall()
-                for dc in dc_rows:
-                    messages.append({
-                        "id": dc["id"], "text": dc["text"], "media": [],
-                        "created_at": dc["created_at"], "author": dc["login"], "role": "director",
-                        "is_director_comment": True
-                    })
-                    
-            else: # monitoring
-                # Обычные сообщения мониторинга
-                m_rows = conn.execute("""
-                    SELECT r.id, r.text, r.created_at, u.login, u.role
-                    FROM reports r JOIN users u ON u.id = r.user_id
-                    WHERE r.address_id = ? AND r.task_id IS NULL ORDER BY r.created_at ASC
-                """, (item["id"],)).fetchall()
-                for m in m_rows:
-                    media = conn.execute(
-                        "SELECT filename, media_type FROM media WHERE report_id = ?", (m["id"],)
-                    ).fetchall()
-                    messages.append({
-                        "id": m["id"], "text": m["text"],
-                        "media": [{"url": f"/uploads/{med['filename']}", "type": med["media_type"]} for med in media],
-                        "created_at": m["created_at"], "author": m["login"], "role": m["role"],
-                        "is_director_comment": False
-                    })
-                
-                # Комментарии директора к мониторингу
-                dc_rows = conn.execute("""
-                    SELECT dc.id, dc.text, dc.created_at, u.login
-                    FROM director_comments dc JOIN users u ON u.id = dc.user_id
-                    WHERE dc.item_type = 'monitoring' AND dc.item_id = ? ORDER BY dc.created_at ASC
-                """, (item["id"],)).fetchall()
-                for dc in dc_rows:
-                    messages.append({
-                        "id": dc["id"], "text": dc["text"], "media": [],
-                        "created_at": dc["created_at"], "author": dc["login"], "role": "director",
-                        "is_director_comment": True
-                    })
-            
-            # Сортируем все сообщения по времени
-            messages.sort(key=lambda x: x["created_at"])
-            item["messages"] = messages
-            # Флаг: есть ли комментарии директора
-            item["has_director_comment"] = any(m.get("is_director_comment") for m in messages)
-            result.append(item)
-            
-        # Определяем просроченные задания (нет ответов более 24 часов)
-        from datetime import datetime, timedelta
-        now = datetime.utcnow()
-        for item in result:
-            if item["type"] == "task" and item["status"] == "open":
-                # Проверяем, есть ли комментарии и когда был последний
-                if item["messages"]:
-                    last_msg_time = datetime.fromisoformat(item["messages"][-1]["created_at"])
-                    hours_since = (now - last_msg_time).total_seconds() / 3600
-                    item["is_overdue"] = hours_since > 24
-                else:
-                    # Если вообще нет сообщений, считаем от создания задания
-                    created_time = datetime.fromisoformat(item["created_at"])
-                    hours_since = (now - created_time).total_seconds() / 3600
-                    item["is_overdue"] = hours_since > 24
+
+        for task in tasks:
+            item = {
+                "type": "task",
+                "id": task["id"],
+                "address_id": task["address_id"],
+                "text": task["text"],
+                "created_at": task["created_at"],
+                "city": task["city"],
+                "address_name": task["address_name"],
+                "manufacturer": task["manufacturer"],
+                "author": task["author"],
+                "author_role": task["author_role"],
+                "status": task["status"],
+                "workflow_status": task["workflow_status"],
+                "workflow_status_label": TASK_WORKFLOW_STATUSES.get(
+                    task["workflow_status"],
+                    task["workflow_status"],
+                ),
+                "created_by_role": task["created_by_role"],
+                "is_important": bool(task["is_important"]),
+                "close_reason": task["close_reason"],
+                "messages": [],
+                "director_comments": []
+            }
+
+            # Обычный чат задания.
+            comments = conn.execute("""
+                SELECT
+                    c.id,
+                    c.text,
+                    c.media_json,
+                    c.created_at,
+                    u.login,
+                    u.role
+                FROM comments c
+                JOIN users u ON u.id = c.user_id
+                WHERE c.task_id = ?
+                ORDER BY c.created_at ASC
+            """, (task["id"],)).fetchall()
+
+            for c in comments:
+                item["messages"].append({
+                    "id": c["id"],
+                    "text": c["text"],
+                    "media": json.loads(c["media_json"]) if c["media_json"] else [],
+                    "created_at": c["created_at"],
+                    "author": c["login"],
+                    "role": c["role"],
+                    "is_director_comment": False
+                })
+
+            # Комментарии директора — ОТДЕЛЬНО от обычного чата.
+            director_comments = conn.execute("""
+                SELECT
+                    dc.id,
+                    dc.text,
+                    dc.created_at,
+                    u.login
+                FROM director_comments dc
+                JOIN users u ON u.id = dc.user_id
+                WHERE dc.item_type = 'task'
+                  AND dc.item_id = ?
+                ORDER BY dc.created_at ASC
+            """, (task["id"],)).fetchall()
+
+            for dc in director_comments:
+                item["director_comments"].append({
+                    "id": dc["id"],
+                    "text": dc["text"],
+                    "created_at": dc["created_at"],
+                    "author": dc["login"],
+                    "role": "director"
+                })
+
+            item["has_director_comment"] = bool(item["director_comments"])
+
+            # История workflow-статусов.
+            history_rows = conn.execute("""
+                SELECT
+                    h.id,
+                    h.status,
+                    h.changed_at,
+                    h.comment,
+                    u.login AS changed_by,
+                    u.role AS changed_by_role
+                FROM task_status_history h
+                JOIN users u ON u.id = h.changed_by
+                WHERE h.task_id = ?
+                ORDER BY h.changed_at ASC, h.id ASC
+            """, (task["id"],)).fetchall()
+
+            item["status_history"] = [
+                {
+                    "id": h["id"],
+                    "status": h["status"],
+                    "status_label": TASK_WORKFLOW_STATUSES.get(
+                        h["status"],
+                        h["status"],
+                    ),
+                    "changed_at": h["changed_at"],
+                    "changed_by": h["changed_by"],
+                    "changed_by_role": h["changed_by_role"],
+                    "comment": h["comment"],
+                }
+                for h in history_rows
+            ]
+
+            # Последнее обычное сообщение.
+            if item["messages"]:
+                last_message = item["messages"][-1]
+                item["last_message_at"] = last_message["created_at"]
+                item["last_message_author"] = last_message["author"]
             else:
+                item["last_message_at"] = None
+                item["last_message_author"] = None
+
+            result.append(item)
+
+        # =========================================================
+        # 2. МОНИТОРИНГ
+        # =========================================================
+        monitoring_addresses = conn.execute("""
+            SELECT
+                a.id AS address_id,
+                a.city,
+                a.address_name,
+                a.manufacturer,
+                MAX(r.created_at) AS last_activity
+            FROM addresses a
+            JOIN reports r
+              ON r.address_id = a.id
+             AND r.task_id IS NULL
+            WHERE a.active = 1
+            GROUP BY
+                a.id,
+                a.city,
+                a.address_name,
+                a.manufacturer
+            ORDER BY last_activity DESC
+            LIMIT 300
+        """).fetchall()
+
+        for address in monitoring_addresses:
+            address_id = address["address_id"]
+
+            # Только обычные сообщения мониторинга.
+            reports = conn.execute("""
+                SELECT
+                    r.id,
+                    r.text,
+                    r.created_at,
+                    u.login,
+                    u.role
+                FROM reports r
+                JOIN users u ON u.id = r.user_id
+                WHERE r.address_id = ?
+                  AND r.task_id IS NULL
+                ORDER BY r.created_at ASC
+            """, (address_id,)).fetchall()
+
+            messages = []
+
+            for r in reports:
+                media = conn.execute("""
+                    SELECT filename, media_type
+                    FROM media
+                    WHERE report_id = ?
+                """, (r["id"],)).fetchall()
+
+                messages.append({
+                    "id": r["id"],
+                    "text": r["text"],
+                    "created_at": r["created_at"],
+                    "author": r["login"],
+                    "role": r["role"],
+                    "media": [
+                        {
+                            "url": f"/uploads/{m['filename']}",
+                            "type": m["media_type"]
+                        }
+                        for m in media
+                    ],
+                    "is_director_comment": False
+                })
+
+            # Комментарии директора — отдельно.
+            director_comments_rows = conn.execute("""
+                SELECT
+                    dc.id,
+                    dc.text,
+                    dc.created_at,
+                    u.login
+                FROM director_comments dc
+                JOIN users u ON u.id = dc.user_id
+                WHERE dc.item_type = 'monitoring'
+                  AND dc.item_id = ?
+                ORDER BY dc.created_at ASC
+            """, (address_id,)).fetchall()
+
+            director_comments = []
+
+            for dc in director_comments_rows:
+                director_comments.append({
+                    "id": dc["id"],
+                    "text": dc["text"],
+                    "created_at": dc["created_at"],
+                    "author": dc["login"],
+                    "role": "director"
+                })
+
+            if not messages:
+                # Адрес без обычных сообщений не создаёт карточку
+                # только из-за комментария директора.
+                continue
+
+            first_message = messages[0]
+            last_message = messages[-1]
+
+            item = {
+                "type": "monitoring",
+
+                # ID карточки мониторинга = ID адреса.
+                # reports.id остаётся ID отдельного сообщения.
+                "id": address_id,
+                "address_id": address_id,
+
+                "text": first_message["text"],
+                "created_at": first_message["created_at"],
+                "monitoring_date": first_message["created_at"],
+
+                "city": address["city"],
+                "address_name": address["address_name"],
+                "manufacturer": address["manufacturer"],
+                "author": first_message["author"],
+
+                "status": "open",
+                "is_important": False,
+                "close_reason": None,
+
+                "messages": messages,
+                "director_comments": director_comments,
+                "has_director_comment": bool(director_comments),
+
+                # Только обычное сообщение.
+                "last_message_at": last_message["created_at"],
+                "last_message_author": last_message["author"]
+            }
+
+            result.append(item)
+
+        # =========================================================
+        # 3. ПРОСРОЧЕННЫЕ ЗАДАНИЯ
+        # =========================================================
+        now = datetime.utcnow()
+
+        for item in result:
+            if item["type"] == "task":
+                # Новая карточка — первые 6 часов.
+                # Просроченное задание — после 24 часов.
+                # Срок считается от создания задания.
+                try:
+                    created_time = datetime.fromisoformat(item["created_at"])
+                    hours_since = (
+                        now - created_time
+                    ).total_seconds() / 3600
+
+                    item["is_new"] = hours_since < 6
+
+                    item["is_overdue"] = (
+                        item["workflow_status"] in ("open", "rework")
+                        and hours_since > 24
+                    )
+                except (ValueError, TypeError):
+                    item["is_new"] = False
+                    item["is_overdue"] = False
+            else:
+                item["is_new"] = False
                 item["is_overdue"] = False
-        
+
+        # Сначала самые недавно активные карточки.
+        # Комментарии директора здесь НЕ участвуют.
+        result.sort(
+            key=lambda x: (
+                x.get("last_message_at")
+                or x.get("created_at")
+                or ""
+            ),
+            reverse=True
+        )
+
         return result
+
 # ==========================================================
 
 if __name__ == "__main__":

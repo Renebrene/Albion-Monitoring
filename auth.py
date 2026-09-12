@@ -76,8 +76,8 @@ ROLE_LABELS = {
 
 # На какую страницу попадает каждая роль после входа
 ROLE_HOME = {
-    "admin": "/tasks",
-    "service": "/tasks",
-    "director": "/server",
+    "admin": "/admin",
+    "service": "/client",
+    "director": "/director",
 }
 

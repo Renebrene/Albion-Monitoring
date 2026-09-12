@@ -1,0 +1,1790 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1"
+  >
+
+  <title>Albion — Администратор</title>
+
+  <link rel="stylesheet" href="/static/style.css">
+
+  <style>
+    body {
+      background: var(--bg, #f5f7fa);
+    }
+
+    .director-page {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 12px;
+    }
+
+    /* ===== ШАПКА ДИРЕКТОРА — В СТИЛЕ СЕРВИСА ===== */
+
+    .director-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: -12px -12px 12px;
+      padding: 10px 14px;
+      background: #111827;
+      color: #fff;
+      min-height: 54px;
+      box-sizing: border-box;
+    }
+
+    .director-title {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      font-size: 18px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .director-title::before {
+      content: "";
+      display: block;
+      width: 32px;
+      height: 32px;
+      margin-right: 12px;
+      flex: 0 0 32px;
+      background: url("/static/logo.png") center / contain no-repeat;
+    }
+
+    .director-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .director-actions .btn.ghost {
+      color: #fff;
+      border-color: rgba(255,255,255,0.35);
+      background: transparent;
+    }
+
+    .director-actions .btn.ghost:hover {
+      background: rgba(255,255,255,0.1);
+    }
+
+    .give-task-btn {
+      border: 0;
+      border-radius: 9px;
+      padding: 9px 14px;
+      background: #2563eb;
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .give-task-btn:hover {
+      background: #1d4ed8;
+    }
+
+    .feed-search-wrap {
+      margin-bottom: 8px;
+    }
+
+    .feed-search {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #d1d5db;
+      border-radius: 9px;
+      padding: 9px 11px;
+      background: white;
+      font-size: 14px;
+    }
+
+
+    /* ==========================================================
+       ADMIN / DIRECTOR FILTERS V2
+       ========================================================== */
+
+    .filters-header {
+      margin-bottom: 8px;
+    }
+
+    .filters-toggle {
+      border: 0;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      color: #111827;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .filters-toggle-arrow {
+      font-size: 9px;
+      transition: transform .15s ease;
+    }
+
+    .filters-toggle.open .filters-toggle-arrow {
+      transform: rotate(180deg);
+    }
+
+    .filters-panel {
+      width: 100%;
+      display: none;
+      margin-bottom: 12px;
+    }
+
+    .filters-panel.open {
+      display: block;
+    }
+
+    .filters-panel .filter-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .filters-panel .filter-block {
+      min-width: 0;
+    }
+
+    .filters-panel .filter-block + .filter-block {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #d1d5db;
+    }
+
+    .filters-panel .filter-row .filter-block + .filter-block {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .filters-panel .filter-block-title {
+      margin-bottom: 7px;
+      font-size: 10px;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    .filters-panel .type-filters,
+    .filters-panel .sort-filters {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .filters-panel .type-filter,
+    .filters-panel .sort-filter {
+      width: 100%;
+      min-width: 0;
+      height: 38px;
+      padding: 0 8px;
+      border: 1px solid #d1d5db;
+      border-radius: 7px;
+      background: #fff;
+      color: #374151;
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .filters-panel .type-filter.active,
+    .filters-panel .sort-filter.active {
+      background: #e5e7eb;
+      border-color: #9ca3af;
+      color: #111827;
+      font-weight: 700;
+    }
+
+    .filters-panel .state-filters {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .filters-panel .state-filter {
+      width: 100%;
+      min-width: 0;
+      min-height: 62px;
+      padding: 7px 5px;
+      border: 1px solid #d1d5db;
+      border-radius: 7px;
+      background: #fff;
+      color: #374151;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      line-height: 1.1;
+      font: inherit;
+    }
+
+    .filters-panel .state-filter.active {
+      background: #e5e7eb;
+      border-color: #9ca3af;
+      color: #111827;
+      font-weight: 700;
+    }
+
+    .filters-panel .state-filter span {
+      font-size: 17px;
+      line-height: 18px;
+    }
+
+    .filters-panel .state-filter small {
+      font-size: 10px;
+      line-height: 12px;
+      text-align: center;
+    }
+
+    .filters-panel .filter-subblock {
+      min-width: 0;
+    }
+
+    .filters-panel .filter-subtitle {
+      font-size: 10px;
+      color: #6b7280;
+      text-transform: uppercase;
+      margin-bottom: 7px;
+    }
+
+    .filters-panel .filter-select {
+      width: 100%;
+      height: 38px;
+      padding: 0 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 7px;
+      background: #fff;
+      color: #111827;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    @media (max-width: 700px) {
+      .filters-panel .filter-row {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+
+      .filters-panel .filter-row .filter-block + .filter-block {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: 0;
+      }
+
+      .filters-panel .state-filters {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .filters-panel .state-filter {
+        min-height: 54px;
+      }
+    }
+
+    .tile-text {
+      font-size: 8px;
+      line-height: 10px;
+      white-space: nowrap;
+    }
+
+    .feed-item {
+      background: white;
+      border: 1px solid #d9dee7;
+      border-radius: 11px;
+      margin-bottom: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: box-shadow .15s, border-color .15s;
+    }
+
+    .feed-item:hover {
+      border-color: #b8c0cc;
+    }
+
+    .feed-item.expanded {
+      box-shadow: 0 4px 16px rgba(0,0,0,.08);
+    }
+
+    .feed-item.new-admin {
+      border-left: 4px solid #f97316;
+    }
+
+    .feed-item.new-director {
+      border-left: 4px solid #dc2626;
+    }
+
+    .feed-item.new-monitoring {
+      border-left: 4px solid #16a34a;
+    }
+
+    .feed-summary {
+      min-height: 76px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .feed-summary .left {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .top-row,
+    .addr-line,
+    .bottom-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .top-row {
+      margin-bottom: 4px;
+    }
+
+    .addr-line {
+      margin-bottom: 4px;
+    }
+
+    .addr {
+      font-size: 15px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .bottom-row {
+      color: #6b7280;
+      font-size: 11px;
+      flex-wrap: wrap;
+    }
+
+    .feed-number {
+      font-size: 11px;
+      color: #6b7280;
+      font-weight: 700;
+    }
+
+    .type-badge,
+    .status-badge {
+      font-size: 10px;
+      line-height: 17px;
+      padding: 0 6px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+
+    .type-task {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .type-monitoring {
+      background: #dcfce7;
+      color: #15803d;
+    }
+
+    .urg-new {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .urg-warning {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .urg-overdue {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+
+    .urg-done {
+      background: #d1fae5;
+      color: #047857;
+    }
+
+    .important-icon {
+      font-size: 14px;
+    }
+
+    .right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 5px;
+      flex: 0 0 auto;
+    }
+
+    .last-message {
+      color: #6b7280;
+      font-size: 10px;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .expand-arrow {
+      color: #9ca3af;
+      font-size: 18px;
+      line-height: 12px;
+      transition: transform .15s;
+    }
+
+    .feed-item.expanded .expand-arrow {
+      transform: rotate(180deg);
+    }
+
+    .feed-details {
+      display: none;
+      padding: 0 12px 12px;
+      border-top: 1px solid #eef0f3;
+    }
+
+    .feed-item.expanded .feed-details {
+      display: block;
+    }
+
+    .manufacturer {
+      font-size: 11px;
+      color: #6b7280;
+      padding: 8px 0;
+    }
+
+    .task-description {
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 9px;
+      margin: 7px 0 10px;
+      font-size: 13px;
+    }
+
+    .chat {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 500px;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+
+    .chat-msg {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding-left: 8px;
+    }
+
+    .chat-msg.service {
+      padding-left: 8px;
+    }
+
+    .chat-msg.admin {
+      padding-left: 16px;
+    }
+
+    .chat-msg.service .chat-bubble {
+      border-left: 3px solid #16a34a;
+      background: #f3f4f6;
+    }
+
+    .chat-msg.admin .chat-bubble {
+      border-left: 3px solid #f97316;
+      background: #e5e7eb;
+    }
+
+    .chat-author {
+      color: #6b7280;
+      font-size: 10px;
+      margin-bottom: 2px;
+    }
+
+    .chat-bubble {
+      max-width: 80%;
+      border-radius: 9px;
+      padding: 7px 9px;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .chat-time {
+      color: #94a3b8;
+      font-size: 9px;
+      text-align: right;
+      margin-top: 3px;
+    }
+
+    .chat-input-wrap {
+      display: flex;
+      gap: 7px;
+      align-items: flex-end;
+      margin-top: 9px;
+    }
+
+    .chat-input-wrap textarea {
+      flex: 1;
+      min-width: 0;
+      resize: vertical;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px;
+      font: inherit;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+
+    .send-chat-btn {
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 12px;
+      background: #2563eb;
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,.45);
+      z-index: 5000;
+      align-items: center;
+      justify-content: center;
+      padding: 15px;
+    }
+
+    .modal.show {
+      display: flex;
+    }
+
+    .modal-card {
+      width: min(600px, 100%);
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 15px 50px rgba(0,0,0,.25);
+      overflow: hidden;
+    }
+
+    .modal-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 800;
+    }
+
+    .modal-close {
+      border: 0;
+      background: transparent;
+      font-size: 22px;
+      cursor: pointer;
+      color: #6b7280;
+    }
+
+    .modal-body {
+      padding: 16px;
+    }
+
+    .modal-body label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: #374151;
+      margin-bottom: 5px;
+    }
+
+    .modal-body select,
+    .modal-body textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 9px;
+      font: inherit;
+      margin-bottom: 12px;
+    }
+
+    .modal-body textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .modal-footer button {
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 14px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .cancel-btn {
+      background: #e5e7eb;
+      color: #374151;
+    }
+
+    .create-btn {
+      background: #2563eb;
+      color: white;
+    }
+
+    .director-mark {
+      display: inline-block;
+      position: relative;
+      width: 17px;
+      height: 12px;
+      border: 2px solid #f59e0b;
+      border-radius: 7px;
+      flex: 0 0 auto;
+    }
+
+    .director-mark::after {
+      content: "";
+      position: absolute;
+      left: 1px;
+      bottom: -5px;
+      width: 5px;
+      height: 5px;
+      border-left: 2px solid #f59e0b;
+      transform: skew(-25deg);
+    }
+
+    .director-mark::before {
+      content: "...";
+      position: absolute;
+      left: 2px;
+      top: -7px;
+      font-size: 10px;
+      line-height: 10px;
+      color: #f59e0b;
+      letter-spacing: -1px;
+    }
+
+    @media(max-width: 600px) {
+      .director-page {
+        padding: 8px;
+      }
+
+      .director-header {
+        margin: -8px -8px 10px;
+        padding: 8px;
+        gap: 6px;
+      }
+
+      .director-title {
+        font-size: 13px;
+      }
+
+      .director-title::before {
+        width: 28px;
+        height: 28px;
+        flex-basis: 28px;
+        margin-right: 8px;
+      }
+
+      .director-actions {
+        gap: 5px;
+      }
+
+      .give-task-btn {
+        padding: 8px 10px;
+        font-size: 12px;
+      }
+
+      .director-actions .btn.ghost {
+        padding: 8px 10px;
+        font-size: 12px;
+      }
+
+      .feed-summary {
+        padding: 9px;
+        min-height: 70px;
+      }
+
+      .last-message {
+        max-width: 120px;
+        white-space: normal;
+      }
+
+      .chat-input-wrap {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .send-chat-btn {
+        width: 100%;
+      }
+
+      .chat-bubble {
+        max-width: 92%;
+      }
+    }
+
+    /* ===== ЕДИНЫЙ ВИД КАРТОЧЕК ДИРЕКТОРА ===== */
+
+    .director-top-main {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .director-top-status {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    .director-type-task {
+      background: #f97316;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .director-type-task-director {
+      background: #dc2626;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .director-type-monitoring {
+      background: #16a34a;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .director-status {
+      font-size: 10px;
+      line-height: 17px;
+      padding: 0 6px;
+      border-radius: 5px;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    .director-status-open-admin {
+      color: #c2410c;
+      background: transparent;
+      border: 1px solid #f97316;
+    }
+
+    .director-status-open-director {
+      color: #dc2626;
+      background: transparent;
+      border: 1px solid #dc2626;
+    }
+
+    .director-status-done {
+      color: #6b7280;
+      background: transparent;
+      border: 1px solid #9ca3af;
+    }
+
+    .director-status-review {
+  color: #2563eb;
+  background: transparent;
+  border: 1px solid #2563eb;
+  font-weight: 800;
+}
+
+.director-status-rework-admin {
+  color: #c2410c;
+  background: transparent;
+  border: 1px solid #f97316;
+  font-weight: 800;
+}
+
+.director-status-rework-director {
+  color: #dc2626;
+  background: transparent;
+  border: 1px solid #dc2626;
+  font-weight: 800;
+}
+
+.director-status-overdue {
+      color: #dc2626;
+      background: transparent;
+      border: 0;
+      padding-left: 0;
+      padding-right: 0;
+      font-weight: 900;
+      letter-spacing: 1px;
+    }
+
+    .director-important {
+      font-size: 16px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .feed-created {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .director-short-desc {
+      margin-bottom: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .director-last-message,
+    .director-last-message-empty {
+      font-size: 11px;
+      color: #6b7280;
+    }
+
+    .director-comments {
+      margin-top: 10px;
+      padding-left: 8px;
+      border-left: 2px solid #dc2626;
+    }
+
+    .director-comment {
+      margin-bottom: 8px;
+      padding: 6px 9px;
+      background: #f8fafc;
+      border-radius: 6px;
+    }
+
+    .director-comment:last-child {
+      margin-bottom: 0;
+    }
+
+    .director-comment-label {
+      color: #dc2626;
+      font-size: 10px;
+      font-weight: 700;
+      margin-bottom: 3px;
+    }
+
+    .director-comment-text {
+      color: #374151;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .closed-director-comment {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      margin-top: 5px;
+      min-width: 0;
+      font-size: 12px;
+      line-height: 16px;
+      color: #dc2626;
+      overflow: hidden;
+    }
+
+    .closed-director-comment > span:last-child {
+      min-width: 0;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .closed-director-comment b {
+      font-weight: 700;
+      color: #dc2626;
+    }
+
+    .closed-director-comment .director-mark {
+      flex: 0 0 20px;
+      margin-top: 1px;
+    }
+
+    @media(max-width: 600px) {
+      .director-top-main {
+        gap: 4px;
+      }
+
+      .director-top-status {
+        gap: 4px;
+      }
+
+      .feed-created {
+        font-size: 10px;
+      }
+
+      .director-short-desc {
+        font-size: 12px;
+      }
+
+      .closed-director-comment {
+        font-size: 11px;
+        line-height: 15px;
+      }
+
+      .director-important {
+        font-size: 15px;
+      }
+    }
+
+  </style>
+</head>
+
+<body>
+
+<div class="director-page">
+
+  <div class="director-header">
+
+    <div class="director-title">
+      АЛЬБИОН. Мониторинг экранов
+    </div>
+
+    <div class="director-actions">
+
+      <button
+        class="give-task-btn"
+        onclick="openTaskModal()"
+      >
+        ＋ Дать задание
+      </button>
+
+      <button
+        class="btn ghost"
+        id="logout"
+      >
+        Выйти
+      </button>
+
+    </div>
+
+  </div>
+
+  <div
+    id="userInfo"
+    style="font-size:11px;color:#6b7280;margin-bottom:8px"
+  ></div>
+
+  <div class="feed-search-wrap">
+    <input
+      id="feedSearch"
+      class="feed-search"
+      placeholder="Поиск по адресу, городу, производителю..."
+    >
+  </div>
+
+
+  <div class="feed-toolbar">
+
+    <div class="toolbar-column">
+
+      <button
+        type="button"
+        class="toolbar-toggle"
+        id="filtersToggle"
+      >
+        <span>ФИЛЬТРЫ</span>
+        <span class="toolbar-arrow">▼</span>
+      </button>
+
+  <div class="filters-panel" id="filtersPanel">
+
+    <!-- ТИП + СОРТИРОВКА -->
+    <div class="filter-row">
+
+      <div class="filter-block">
+        <div class="filter-block-title">Тип</div>
+
+        <div class="type-filters">
+          <button class="type-filter active" data-filter="all">
+            Все
+          </button>
+          <button class="type-filter" data-filter="task">
+            Задания
+          </button>
+          <button class="type-filter" data-filter="monitoring">
+            Мониторинг
+          </button>
+        </div>
+      </div>
+
+      <div class="filter-block">
+        <div class="filter-block-title">Сортировка</div>
+
+        <div class="sort-filters">
+          <button
+            class="sort-filter"
+            id="sortDate"
+            data-sort="date"
+            data-direction="desc"
+          >
+            Дата <span class="sort-direction">↓</span>
+          </button>
+
+          <button
+            class="sort-filter active"
+            id="sortMessage"
+            data-sort="message"
+            data-direction="desc"
+          >
+            Посл. сообщение <span class="sort-direction">↓</span>
+          </button>
+
+          <button
+            class="sort-filter"
+            id="sortNumber"
+            data-sort="number"
+            data-direction="asc"
+          >
+            Номер <span class="sort-direction">↑</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- СОСТОЯНИЕ -->
+    <div class="filter-block">
+      <div class="filter-block-title">Состояние</div>
+
+      <div class="state-filters">
+
+        <button class="state-filter" data-state="new" title="Новое">
+          <span>✨</span>
+          <small>Новое</small>
+        </button>
+
+        <button class="state-filter" data-state="pending_review" title="На рассмотрении">
+          <span>◉</span>
+          <small>На рассмотрении</small>
+        </button>
+
+        <button class="state-filter" data-state="rework" title="На доработке">
+          <span>⚙</span>
+          <small>На доработке</small>
+        </button>
+
+        <button class="state-filter" data-state="overdue" title="Просроченное">
+          <span>⏰</span>
+          <small>Просроченное</small>
+        </button>
+
+        <button class="state-filter" data-state="important" title="Важное">
+          <span>★</span>
+          <small>Важное</small>
+        </button>
+
+        <button class="state-filter" data-state="done" title="Выполнено">
+          <span>✓</span>
+          <small>Выполнено</small>
+        </button>
+
+        <button class="state-filter" data-state="closed" title="Отменено">
+          <span>×</span>
+          <small>Отменено</small>
+        </button>
+
+        <button class="state-filter" data-state="director" title="Комментарий директора">
+          <span>💬</span>
+          <small>Комментарий директора</small>
+        </button>
+
+      </div>
+    </div>
+
+    <!-- РАЗНОЕ -->
+    <div class="filter-block">
+      <div class="filter-block-title">Разное</div>
+
+      <div class="filter-row">
+
+        <div class="filter-subblock">
+          <div class="filter-subtitle">Автор</div>
+
+          <select id="filterAuthor" class="filter-select">
+            <option value="">Все</option>
+            <option value="admin">Админ</option>
+            <option value="director">Директор</option>
+          </select>
+        </div>
+
+        <div class="filter-subblock">
+          <div class="filter-subtitle">Поставщик</div>
+
+          <select id="filterSupplier" class="filter-select">
+            <option value="">Все</option>
+            <option value="Лед Гарант">Лед Гарант</option>
+            <option value="Вижн Лед">Вижн Лед</option>
+          </select>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  </div>
+
+    <div class="toolbar-column">
+
+      <button
+        type="button"
+        class="toolbar-toggle"
+        id="statsToggle"
+      >
+        <span>СТАТИСТИКА</span>
+        <span class="toolbar-arrow">▼</span>
+      </button>
+
+    <div class="stats-panel" id="statsPanel">
+
+      <div class="stats-section">
+        <div class="stats-title">ТИП</div>
+
+        <div class="stats-grid">
+          <div class="stat-item">
+            <strong id="statTypeAll">0</strong>
+            <span>Все</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statTypeTasks">0</strong>
+            <span>Задания</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statTypeMonitoring">0</strong>
+            <span>Мониторинг</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-section">
+        <div class="stats-title">СОСТОЯНИЕ</div>
+
+        <div class="stats-grid">
+          <div class="stat-item">
+            <strong id="statStateNew">0</strong>
+            <span>Новое</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStatePending">0</strong>
+            <span>На рассмотрении</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStateRework">0</strong>
+            <span>На доработке</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStateOverdue">0</strong>
+            <span>Просроченное</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStateImportant">0</strong>
+            <span>Важное</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStateDone">0</strong>
+            <span>Выполнено</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStateClosed">0</strong>
+            <span>Отменено</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statStateDirector">0</strong>
+            <span>Комментарий директора</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-section">
+        <div class="stats-title">АВТОР</div>
+
+        <div class="stats-grid">
+          <div class="stat-item">
+            <strong id="statAuthorAdmin">0</strong>
+            <span>Админ</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statAuthorDirector">0</strong>
+            <span>Директор</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-section">
+        <div class="stats-title">ПОСТАВЩИК</div>
+
+        <div class="stats-grid">
+          <div class="stat-item">
+            <strong id="statSupplierLedGarant">0</strong>
+            <span>Лед Гарант</span>
+          </div>
+
+          <div class="stat-item">
+            <strong id="statSupplierVisionLed">0</strong>
+            <span>Вижн Лед</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  </div>
+
+
+  <div id="feed"></div>
+
+</div>
+
+
+<!-- ===== MODAL: ДАТЬ ЗАДАНИЕ ===== -->
+
+<div
+  id="taskModal"
+  class="modal"
+>
+
+  <div class="modal-card">
+
+    <div class="modal-header">
+
+      <span>Дать задание</span>
+
+      <button
+        class="modal-close"
+        onclick="closeTaskModal()"
+      >
+        ×
+      </button>
+
+    </div>
+
+    <div class="modal-body">
+
+      <label for="taskCity">Город</label>
+
+      <input
+        id="taskCity"
+        type="text"
+        list="taskCityList"
+        autocomplete="off"
+        placeholder="Начните вводить город..."
+      >
+
+      <datalist id="taskCityList"></datalist>
+
+      <label for="taskAddressName">Адрес</label>
+
+      <input
+        id="taskAddressName"
+        type="text"
+        list="taskAddressList"
+        autocomplete="off"
+        placeholder="Сначала выберите город..."
+      >
+
+      <datalist id="taskAddressList"></datalist>
+
+      <input type="hidden" id="taskAddressId">
+
+      <label class="important-task-option">
+        <input type="checkbox" id="taskImportant">
+        <span>Важное задание</span>
+      </label>
+
+      <label for="taskDescription">
+        Задание
+      </label>
+
+      <textarea
+        id="taskDescription"
+        placeholder="Что необходимо сделать?"
+      ></textarea>
+
+      <div class="modal-footer">
+
+        <button
+          class="cancel-btn"
+          onclick="closeTaskModal()"
+        >
+          Отмена
+        </button>
+
+        <button
+          class="create-btn"
+          id="createTaskBtn"
+          onclick="createDirectorTask()"
+        >
+          Создать задание
+        </button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<style>
+    .modal-body input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 9px;
+      background: white;
+      font: inherit;
+      margin-bottom: 12px;
+    }
+
+    .important-task-option {
+      display: flex !important;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      margin: 2px 0 14px;
+      font-size: 13px !important;
+      font-weight: 700 !important;
+    }
+
+    .important-task-option input {
+      width: 17px;
+      height: 17px;
+      margin: 0;
+      accent-color: #f59e0b;
+    }
+  
+/* =========================================================
+   ОБЩАЯ ПАНЕЛЬ ФИЛЬТРОВ И СТАТИСТИКИ
+   ========================================================= */
+
+.feed-toolbar {
+  width: 100%;
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.toolbar-column {
+  min-width: 0;
+}
+
+.toolbar-buttons {
+  display: block;
+  margin: 0;
+}
+
+.toolbar-toggle {
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink, var(--text));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toolbar-toggle:hover {
+  border-color: var(--primary);
+}
+
+.toolbar-toggle.open {
+  background: #f5f7fa;
+}
+
+.toolbar-arrow {
+  font-size: 10px;
+  transition: transform .15s ease;
+}
+
+.toolbar-toggle.open .toolbar-arrow {
+  transform: rotate(180deg);
+}
+
+.filters-panel,
+.stats-panel {
+  width: 100%;
+  display: none;
+  padding: 10px;
+  margin-top: 8px;
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.filters-panel.open,
+.stats-panel.open {
+  display: block;
+}
+
+.stats-section + .stats-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.stats-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stats-grid {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  flex: 1;
+  min-width: 70px;
+  padding: 7px 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: center;
+}
+
+.stat-item strong {
+  display: block;
+  font-size: 17px;
+  line-height: 19px;
+}
+
+.stat-item span {
+  display: block;
+  margin-top: 2px;
+  font-size: 8px;
+  color: var(--muted);
+}
+
+@media (max-width: 700px) {
+  .feed-toolbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .toolbar-buttons {
+    display: block;
+  }
+
+  .toolbar-toggle {
+    height: 38px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
+  .filters-panel,
+  .stats-panel {
+    padding: 7px;
+  }
+
+  .stat-item {
+    min-width: 60px;
+  }
+}
+
+
+/* =========================================================
+   ФИНАЛЬНЫЙ ЕДИНЫЙ ВИД ЛЕНТЫ АДМИНА
+   как на странице директора
+   ========================================================= */
+
+.feed-toolbar {
+  width: 100%;
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  box-sizing: border-box;
+}
+
+.toolbar-column {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.toolbar-toggle {
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink, var(--text));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+  box-sizing: border-box;
+}
+
+.toolbar-toggle:hover {
+  border-color: var(--primary);
+}
+
+.toolbar-toggle.open {
+  background: #f5f7fa;
+}
+
+.toolbar-arrow {
+  font-size: 10px;
+  transition: transform .15s ease;
+}
+
+.toolbar-toggle.open .toolbar-arrow {
+  transform: rotate(180deg);
+}
+
+.filters-panel,
+.stats-panel {
+  width: 100%;
+  box-sizing: border-box;
+  display: none;
+  padding: 10px;
+  margin-top: 8px;
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.filters-panel.open,
+.stats-panel.open {
+  display: block;
+}
+
+/* ---------- карточки ---------- */
+
+#feed {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.feed-item {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  background: #fff;
+  border: 1px solid #d9dee7;
+  border-radius: 11px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: box-shadow .15s, border-color .15s;
+}
+
+.feed-summary {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 76px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.feed-summary .left {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.top-row,
+.addr-line,
+.bottom-row {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.top-row {
+  width: 100%;
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+
+.addr-line {
+  width: 100%;
+}
+
+.bottom-row {
+  flex-wrap: wrap;
+}
+
+.feed-number {
+  font-size: 11px;
+  color: #6b7280;
+  font-weight: 700;
+}
+
+.type-badge,
+.status-badge {
+  white-space: nowrap;
+}
+
+/* ---------- статистика ---------- */
+
+.stats-section + .stats-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.stats-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stats-grid {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  flex: 1;
+  min-width: 70px;
+  padding: 7px 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* ---------- мобильная версия ---------- */
+
+@media (max-width: 700px) {
+  .feed-toolbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .toolbar-toggle {
+    height: 38px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
+  .filters-panel,
+  .stats-panel {
+    padding: 7px;
+  }
+
+  .feed-summary {
+    padding: 9px;
+    min-height: 70px;
+  }
+
+  .stat-item {
+    min-width: 60px;
+  }
+}
+
+
+/* =========================================================
+   ADMIN — ЕДИНАЯ ВЕРТИКАЛЬНАЯ СТРУКТУРА КАК У ДИРЕКТОРА
+   ========================================================= */
+
+.feed-toolbar {
+  width: 100% !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  gap: 8px !important;
+  margin-bottom: 12px !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar .toolbar-column {
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+}
+
+#feed {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  clear: both !important;
+}
+
+.feed-item {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+}
+
+@media (max-width: 700px) {
+  .feed-toolbar {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+</style>
+<script src="/static/admin.js"></script>
+
+</body>
+</html>

@@ -35,5 +35,20 @@
 </div>
 
 <div class="toast" id="toast"></div>
-<script src="/static/server.js"></script>
+<script src="/static/server.js">
+async function goHome(){
+  const token = localStorage.getItem('token');
+  let role = 'service';
+  try{
+    const me = await fetch('/api/me',{headers:{'Authorization':'Bearer '+token}}).then(r=>r.json());
+    role = me.role || 'service';
+  }catch(e){}
+  const ROUTES = {
+    admin:    '/client?role=admin',
+    director: '/client?role=director',
+    service:  '/client?role=service'
+  };
+  location.href = ROUTES[role] || ('/client?role=' + role);
+}
+</script>
 </body></html>

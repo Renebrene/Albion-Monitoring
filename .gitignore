@@ -1,7 +1,21 @@
 __pycache__/
 *.pyc
+
 .env
 venv/
+.venv/
+
 instance/
-uploads/
 *.db
+data/
+uploads/
+
+*.bak
+*.before_*
+
+# Temporary development scripts
+apply_frontend_workflow.py
+apply_workflow_backend.py
+create_admin_page.py
+update_controls.py
+client.js

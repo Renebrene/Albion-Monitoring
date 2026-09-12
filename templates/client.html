@@ -20,9 +20,18 @@
 .feed-item { background: var(--card); border: 2px solid #cbd5e1; border-radius: 12px; overflow: hidden; transition: all 0.2s ease; cursor: pointer; }
 .feed-item:hover { border-color: #94a3b8; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
 .feed-item.expanded { border-color: var(--primary); box-shadow: 0 8px 20px rgba(0,0,0,0.12); }
-.feed-item.important { border-color: #f59e0b; border-width: 3px; }
-.feed-item.done { border-color: #9ca3af; border-width: 2px; opacity: 0.85; }
-.feed-item.overdue { border-color: #ef4444; border-width: 3px; }
+.feed-item.new-admin {
+  border-left: 4px solid #f97316;
+}
+
+.feed-item.new-director {
+  border-left: 4px solid #dc2626;
+}
+
+.feed-item.new-monitoring {
+  border-left: 4px solid #16a34a;
+}
+
 
 .feed-summary { padding: 14px 16px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .feed-summary .left { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
@@ -40,17 +49,54 @@
 .close-reason { display: inline-block; margin-bottom: 12px; padding: 4px 10px; background: #fef3c7; color: #92400e; border-radius: 6px; font-size: 12px; font-weight: 600; }
 
 .chat-box { max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 12px; margin-bottom: 12px; }
-.chat-msg { margin-bottom: 12px; display: flex; flex-direction: column; }
-.chat-msg.me { align-items: flex-end; }
-.chat-bubble { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
-.chat-msg:not(.me) .chat-bubble { background: #f1f5f9; color: var(--ink); border-bottom-left-radius: 4px; }
-.chat-msg.me .chat-bubble { background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
-.chat-msg.director .chat-bubble { background: #fef3c7 !important; color: #92400e !important; border: 1px solid #fbbf24 !important; }
-.chat-msg.director .chat-author { color: #d97706 !important; font-weight: 800 !important; }
-.chat-msg.director .chat-author::before { content: ""; }
-.chat-author { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
-.chat-msg.me .chat-author { text-align: right; color: rgba(255,255,255,0.8); }
-.chat-time { font-size: 10px; opacity: 0.7; margin-top: 4px; text-align: right; }
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding-left: 8px;
+  margin-bottom: 10px;
+}
+
+.chat-msg.service {
+  padding-left: 8px;
+}
+
+.chat-msg.admin {
+  padding-left: 16px;
+}
+
+.chat-msg.service .chat-bubble {
+  border-left: 3px solid #16a34a;
+  background: #f3f4f6;
+  color: var(--ink);
+}
+
+.chat-msg.admin .chat-bubble {
+  border-left: 3px solid #f97316;
+  background: #e5e7eb;
+  color: var(--ink);
+}
+
+.chat-bubble {
+  max-width: 80%;
+  border-radius: 9px;
+  padding: 7px 9px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.chat-author {
+  color: #6b7280;
+  font-size: 10px;
+  margin-bottom: 2px;
+}
+
+.chat-time {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-top: 4px;
+  text-align: right;
+}
 .chat-input-area { display: flex; gap: 8px; align-items: flex-end; }
 .chat-input-area textarea { flex: 1; min-height: 40px; max-height: 100px; margin: 0; padding: 8px 12px; font-size: 14px; }
 .chat-input-area .btn { width: auto; margin: 0; padding: 10px 16px; height: 40px; }
@@ -62,42 +108,667 @@
 .modal-close { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); }
 
 .user-row { display: flex; gap: 8px; align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-.status-options { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
-.status-option { padding: 12px; border: 2px solid var(--border); border-radius: 8px; cursor: pointer; }
-.status-option.selected { border-color: var(--primary); background: #eff6ff; }
+
+
+.feed-controls {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 10px;
+
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 4px 0 8px;
+}
+
+
+/* =========================================================
+   ОСНОВНЫЕ ФИЛЬТРЫ
+   ========================================================= */
+
+.main-filters {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+
+  flex: 1;
+  min-width: 0;
+}
+
+
+.filter-tile {
+  flex: 1;
+  min-width: 0;
+
+  height: 58px;
+  padding: 5px 6px;
+
+  border: 2px solid var(--border);
+  border-radius: 10px;
+
+  background: #fff;
+  color: var(--muted);
+
+  cursor: pointer;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+
+  gap: 2px;
+
+  transition: all 0.15s ease;
+}
+
+
+.filter-tile:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+
+.filter-tile.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+
+/* Мониторинг */
+
+.monitoring-filter {
+  border-color: #7dd3fc;
+}
+
+
+.monitoring-filter.active {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+
+/* Задания */
+
+.task-filter {
+  border-color: #fdba74;
+}
+
+
+.task-filter.active {
+  background: #f97316;
+  border-color: #f97316;
+}
+
+
+/* =========================================================
+   КОМПАКТНЫЕ СОРТИРОВКИ
+   ========================================================= */
+
+.sort-groups {
+  display: flex;
+  align-items: stretch;
+
+  gap: 5px;
+
+  flex-shrink: 0;
+}
+
+
+.sort-group {
+  display: flex;
+  align-items: center;
+
+  gap: 3px;
+  padding-left: 5px;
+
+  border-left: 1px solid var(--border);
+}
+
+
+.sort-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+
+  font-size: 9px;
+  font-weight: 700;
+
+  color: var(--muted);
+  text-align: center;
+}
+
+
+.sort-arrows {
+  display: flex;
+  flex-direction: column;
+
+  gap: 2px;
+}
+
+
+.sort-arrow {
+  width: 30px;
+  height: 27px;
+
+  padding: 0;
+
+  border: 1px solid var(--border);
+  border-radius: 6px;
+
+  background: #fff;
+  color: var(--muted);
+
+  cursor: pointer;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+
+  transition: all 0.15s ease;
+}
+
+
+.sort-arrow:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+
+.sort-arrow.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+
+/* =========================================================
+   ПОДПИСИ ОСНОВНЫХ ФИЛЬТРОВ
+   ========================================================= */
+
+.tile-icon {
+  display: block;
+
+  height: 20px;
+  line-height: 20px;
+
+  font-size: 18px;
+  font-weight: 800;
+}
+
+
+.tile-text {
+  display: block;
+
+  width: 100%;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  font-size: 10px;
+  line-height: 12px;
+
+  font-weight: 700;
+  text-align: center;
+}
+
+
+/* =========================================================
+   МОБИЛЬНАЯ ВЕРСИЯ
+   ========================================================= */
+
+@media (max-width: 700px) {
+  .feed-toolbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .toolbar-buttons {
+    display: block;
+  }
+
+
+  .feed-controls {
+    gap: 5px;
+  }
+
+
+  .main-filters {
+    gap: 4px;
+  }
+
+
+  .filter-tile {
+    height: 52px;
+
+    padding: 3px 2px;
+
+    border-radius: 8px;
+  }
+
+
+  .tile-icon {
+    height: 18px;
+    line-height: 18px;
+
+    font-size: 16px;
+  }
+
+
+  .tile-text {
+    font-size: 8px;
+    line-height: 10px;
+  }
+
+
+  .sort-groups {
+    gap: 2px;
+  }
+
+
+  .sort-group {
+    padding-left: 3px;
+    gap: 2px;
+  }
+
+
+  .sort-label {
+    font-size: 8px;
+  }
+
+
+  .sort-arrow {
+    width: 24px;
+    height: 24px;
+
+    border-radius: 5px;
+
+    font-size: 15px;
+  }
+
+}
+
+
+.feed-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.feed-search select,
+.feed-search input {
+  margin: 0;
+}
+
+.feed-search select {
+  flex: 0 0 220px;
+}
+
+.feed-search input {
+  flex: 1;
+  min-width: 180px;
+}
+
+.last-message {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.feed-number {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+@media (max-width: 700px) {
+  .feed-controls {
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
+  .control-section {
+    gap: 4px;
+  }
+
+  .control-divider {
+    height: 36px;
+    margin: 0 1px;
+  }
+
+  .filter-tile,
+  .sort-tile {
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+  }
+
+  .tile-icon {
+    font-size: 15px;
+    height: 20px;
+    line-height: 20px;
+  }
+
+  .tile-text {
+    font-size: 8px;
+    line-height: 11px;
+  }
+
+  .feed-search {
+    flex-direction: column;
+  }
+
+  .feed-search select {
+    flex: none;
+    width: 100%;
+  }
+
+  .feed-search input {
+    width: 100%;
+  }
+}
+
+
+/* =========================================================
+   РАЗЛИЧИЕ КАРТОЧЕК: МОНИТОРИНГ / ЗАДАНИЕ
+   Структура и размеры карточек не меняются.
+   ========================================================= */
+
+.feed-item.monitoring-card {
+  background: #eef8ff;
+}
+
+.feed-item.task-card {
+  background: #fff5e8;
+}
+
+.feed-item.monitoring-card .feed-summary {
+  background: #eef8ff;
+}
+
+.feed-item.task-card .feed-summary {
+  background: #fff5e8;
+}
+
+.feed-item.monitoring-card .feed-details {
+  background: #f5fbff;
+}
+
+.feed-item.task-card .feed-details {
+  background: #fffaf4;
+}
+
+
+.feed-type-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 9px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: .3px;
+  flex-shrink: 0;
+}
+
+.monitoring-label {
+  background: #10b981;
+}
+
+.task-label {
+  background: #f97316;
+}
+
+@media (max-width: 700px) {
+  .feed-type-label {
+    padding: 3px 7px;
+    font-size: 9px;
+    border-radius: 5px;
+  }
+}
+
 </style>
 </head><body>
 <header class="topbar">
   <h1>
     <img src="/static/logo.png" alt="Logo" onerror="this.style.display='none'">
-    АЛЬБИОН. Мониторинг экранов: <span id="roleName" style="font-weight:400; opacity:0.9; margin-left: 6px;"></span>
+    <span class="brand-title">АЛЬБИОН. Мониторинг экранов</span>
+    <span id="roleName" class="top-user-role"></span>
+    <span id="whoami" class="top-user-login"></span>
   </h1>
   <div class="right">
     <button class="btn ghost" id="adminSettingsBtn" style="display:none">⚙️ Настройки</button>
     <button class="add-task-btn" id="addTaskBtn" style="display:none">+ Добавить задание</button>
-    <button class="add-task-btn" id="monitoringBtn" style="display:none;background:#0ea5e9">📷 Мониторинг</button>
-    <span id="whoami" style="font-size:12px;opacity:0.9"></span>
+    <button class="add-task-btn" id="monitoringBtn" style="display:none;background:#ef4444">📷 Мониторинг</button>
     <button class="btn ghost" id="logout">Выйти</button>
   </div>
 </header>
 
 <div class="container wide">
-  <div class="filter-buttons" id="filterButtons">
-    <button class="filter-btn active" data-filter="all">Все</button>
-    <button class="filter-btn" data-filter="task">📋 Задания</button>
-    <button class="filter-btn" data-filter="monitoring">📷 Мониторинг</button>
-    <button class="filter-btn" data-filter="current">🔵 Текущие</button>
-    <button class="filter-btn" data-filter="done">✅ Выполненные</button>
-    <button class="filter-btn" data-filter="important">⭐ Важные</button>
-    <button class="filter-btn" data-filter="overdue">🔴 Просроченные</button>
+  <div class="feed-toolbar">
+
+  <div class="toolbar-column">
+
+    <button class="toolbar-toggle" id="filtersToggle">
+        <span>ФИЛЬТРЫ</span>
+        <span class="toolbar-arrow">▼</span>
+      </button>
+
+    <div class="filters-panel" id="filtersPanel">
+
+      <!-- ТИП + СОРТИРОВКА -->
+      <div class="filter-row">
+
+        <div class="filter-block">
+          <div class="filter-block-title">Тип</div>
+
+          <div class="type-filters">
+            <button class="type-filter active" data-filter="all">
+              Все
+            </button>
+            <button class="type-filter task-filter" data-filter="task">
+              Задания
+            </button>
+            <button class="type-filter monitoring-filter" data-filter="monitoring">
+              Мониторинг
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-block">
+          <div class="filter-block-title">Сортировка</div>
+
+          <div class="sort-filters">
+            <button
+              class="sort-filter"
+              data-sort="date"
+              data-direction="desc"
+            >
+              Дата <span class="sort-direction">↓</span>
+            </button>
+
+            <button
+              class="sort-filter active"
+              data-sort="message"
+              data-direction="desc"
+            >
+              Посл. сообщение <span class="sort-direction">↓</span>
+            </button>
+
+            <button
+              class="sort-filter"
+              data-sort="number"
+              data-direction="asc"
+            >
+              Номер <span class="sort-direction">↑</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+
+      <!-- СОСТОЯНИЕ -->
+      <div class="filter-block">
+        <div class="filter-block-title">Состояние</div>
+
+        <div class="state-filters">
+
+          <button class="state-filter" data-state="new" title="Новое">
+            <span>✨</span>
+            <small>Новое</small>
+          </button>
+
+          <button class="state-filter" data-state="pending_review" title="На рассмотрении">
+            <span>◉</span>
+            <small>На рассмотрении</small>
+          </button>
+
+          <button class="state-filter" data-state="rework" title="На доработке">
+            <span>⚙</span>
+            <small>На доработке</small>
+          </button>
+
+          <button class="state-filter" data-state="overdue" title="Просроченное">
+            <span>⏰</span>
+            <small>Просроченное</small>
+          </button>
+
+          <button class="state-filter" data-state="important" title="Важное">
+            <span>★</span>
+            <small>Важное</small>
+          </button>
+
+          <button class="state-filter" data-state="done" title="Выполнено">
+            <span>✓</span>
+            <small>Выполнено</small>
+          </button>
+
+          <button class="state-filter" data-state="closed" title="Отменено">
+            <span>×</span>
+            <small>Отменено</small>
+          </button>
+
+          <button class="state-filter" data-state="director" title="Комментарий директора">
+            <span>💬</span>
+            <small>Комментарий директора</small>
+          </button>
+
+        </div>
+      </div>
+
+
+      <!-- РАЗНОЕ -->
+      <div class="filter-block">
+        <div class="filter-block-title">Разное</div>
+
+        <div class="filter-row">
+
+          <div class="filter-subblock">
+            <div class="filter-subtitle">Автор</div>
+
+            <select id="filterAuthor" class="filter-select">
+              <option value="">Все</option>
+              <option value="admin">Админ</option>
+              <option value="director">Директор</option>
+            </select>
+          </div>
+
+          <div class="filter-subblock">
+            <div class="filter-subtitle">Поставщик</div>
+
+            <select id="filterSupplier" class="filter-select">
+              <option value="">Все</option>
+              <option value="Лед Гарант">Лед Гарант</option>
+              <option value="Вижн Лед">Вижн Лед</option>
+            </select>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
   </div>
-  
+
+  <div class="toolbar-column">
+
+    <button class="toolbar-toggle" id="statsToggle">
+        <span>СТАТИСТИКА</span>
+        <span class="toolbar-arrow">▼</span>
+      </button>
+
+    <div class="stats-panel" id="statsPanel">
+
+      <div class="stats-section">
+        <div class="stats-title">ЗАДАНИЯ</div>
+
+        <div class="stats-grid">
+          <div class="stat-item">
+            <strong id="statTasksTotal">0</strong>
+            <span>Всего</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statTasksNew">0</strong>
+            <span>Новых</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statTasksOverdue">0</strong>
+            <span>Просрочено</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statTasksImportant">0</strong>
+            <span>Важных</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statTasksDone">0</strong>
+            <span>Закрыто</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-section">
+        <div class="stats-title">МОНИТОРИНГ</div>
+
+        <div class="stats-grid">
+          <div class="stat-item">
+            <strong id="statMonitoringTotal">0</strong>
+            <span>Всего</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statMonitoringMessages">0</strong>
+            <span>С сообщениями</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statMonitoringToday">0</strong>
+            <span>Сегодня</span>
+          </div>
+          <div class="stat-item">
+            <strong id="statDirectorComments">0</strong>
+            <span>С комментарием</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+
+  </div>
+
   <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap">
     <select id="filterCity" style="flex:1;min-width:150px;margin:0"><option value="">Все города</option></select>
     <input id="filterSearch" placeholder="Поиск по адресу..." style="flex:1;min-width:200px;margin:0">
   </div>
-  
-  <div id="feed" class="feed-container"></div>
+
+<div id="feed" class="feed-container"></div>
 </div>
 
 <!-- Модалка: Настройки Админа -->
@@ -139,22 +810,6 @@
   </div>
 </div>
 
-<!-- Модалка: Закрытие задания -->
-<div class="modal-overlay" id="closeTaskModal">
-  <div class="modal-box">
-    <button class="modal-close" onclick="closeCloseTaskModal()">&times;</button>
-    <h3>🔒 Закрытие задания №<span id="closeTaskId"></span></h3>
-    <div class="status-options">
-      <div class="status-option" data-reason="Сделано" onclick="selectCloseReason(this, 'Сделано')"><label>✅ Сделано</label></div>
-      <div class="status-option" data-reason="Неактуально" onclick="selectCloseReason(this, 'Неактуально')"><label> Неактуально</label></div>
-      <div class="status-option" data-reason="На переделку" onclick="selectCloseReason(this, 'На переделку')"><label>🔄 На переделку</label></div>
-      <div class="status-option" data-reason="Проверить" onclick="selectCloseReason(this, 'Проверить')"><label>👁 Проверить</label></div>
-      <div class="status-option" data-reason="custom" onclick="selectCloseReason(this, 'custom')"><label>✏️ Свой статус</label><input id="customReason" type="text" placeholder="Введите свой статус..." style="margin-top:8px;display:none;width:100%"></div>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:20px"><button class="btn secondary" onclick="closeCloseTaskModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="confirmCloseTask()" style="flex:1;margin:0;background:#10b981">Закрыть задание</button></div>
-  </div>
-</div>
-
 <!-- Модалка: Создание записи мониторинга -->
 <div class="modal-overlay" id="monitoringModal">
   <div class="modal-box">
@@ -175,3 +830,1000 @@
 <div class="toast" id="toast"></div>
 <script src="/static/client.js?v=106"></script>
 </body></html>
+
+<style>
+.type-badge {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 9px !important;
+  border-radius: 6px !important;
+  color: #fff !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  letter-spacing: .3px;
+}
+
+.type-badge.type-monitoring {
+  background: #10b981 !important;
+}
+
+.type-badge.type-task {
+  background: #f97316 !important;
+}
+
+@media (max-width: 700px) {
+  .type-badge {
+    padding: 3px 7px !important;
+    font-size: 9px !important;
+  }
+}
+
+/* =========================================================
+   НОВАЯ ВЕРХНЯЯ ПАНЕЛЬ ФИЛЬТРОВ И СТАТИСТИКИ
+   ========================================================= */
+
+.feed-toolbar {
+  width: 100%;
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.toolbar-column {
+  min-width: 0;
+}
+
+.toolbar-buttons {
+  display: block;
+  margin: 0;
+}
+
+.toolbar-toggle {
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toolbar-toggle:hover {
+  border-color: var(--primary);
+}
+
+.toolbar-toggle.open {
+  background: #f5f7fa;
+}
+
+.toolbar-arrow {
+  font-size: 11px;
+  transition: transform .15s ease;
+}
+
+.toolbar-toggle.open .toolbar-arrow {
+  transform: rotate(180deg);
+}
+
+.filters-panel,
+.stats-panel {
+  width: 100%;
+  display: none;
+  padding: 10px;
+  margin-top: 8px;
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.filters-panel.open,
+.stats-panel.open {
+  display: block;
+}
+
+.filter-block + .filter-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.filter-block-title {
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.type-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.type-filter {
+  flex: 1;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.type-filter.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.type-filter.monitoring-filter.active {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+.type-filter.task-filter.active {
+  background: #f97316;
+  border-color: #f97316;
+}
+
+.state-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.state-filter {
+  width: 58px;
+  height: 48px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.state-filter span {
+  font-size: 18px;
+  line-height: 19px;
+}
+
+.state-filter small {
+  font-size: 8px;
+  line-height: 10px;
+  font-weight: 700;
+}
+
+.state-filter.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.sort-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.sort-filter {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.sort-filter.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.sort-direction {
+  font-size: 14px;
+  font-weight: 900;
+  margin-left: 3px;
+}
+
+.stats-section + .stats-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.stats-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stats-grid {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  flex: 1;
+  min-width: 70px;
+  padding: 7px 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: center;
+}
+
+.stat-item strong {
+  display: block;
+  font-size: 17px;
+  line-height: 19px;
+}
+
+.stat-item span {
+  display: block;
+  margin-top: 2px;
+  font-size: 8px;
+  color: var(--muted);
+}
+
+@media (min-width: 701px) {
+
+  .filters-panel,
+  .stats-panel {
+    margin-bottom: 0;
+  }
+
+  .filters-panel.open,
+  .stats-panel.open {
+    display: block;
+  }
+}
+
+@media (max-width: 700px) {
+  .toolbar-buttons {
+    gap: 5px;
+  }
+
+  .toolbar-toggle {
+    height: 38px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
+  .filters-panel,
+  .stats-panel {
+    padding: 7px;
+  }
+
+  .type-filters {
+    gap: 4px;
+  }
+
+  .type-filter {
+    height: 34px;
+    font-size: 9px;
+    padding: 0 3px;
+  }
+
+  .state-filters {
+    justify-content: space-between;
+    gap: 3px;
+  }
+
+  .state-filter {
+    flex: 1;
+    width: auto;
+    height: 43px;
+  }
+
+  .state-filter span {
+    font-size: 16px;
+    line-height: 17px;
+  }
+
+  .state-filter small {
+    font-size: 7px;
+  }
+
+  .sort-filters {
+    gap: 4px;
+  }
+
+  .sort-filter {
+    height: 34px;
+    padding: 0 3px;
+    font-size: 8px;
+  }
+
+  .sort-direction {
+    font-size: 12px;
+  }
+
+  .stat-item {
+    min-width: 60px;
+  }
+}
+
+
+/* =========================================================
+   ФИНАЛЬНАЯ АДАПТАЦИЯ ШАПКИ ДЛЯ СМАРТФОНА
+   Только шапка. Остальной интерфейс не меняем.
+   ========================================================= */
+
+@media (max-width: 700px) {
+  .topbar {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .topbar h1 {
+    flex: 0 0 54px;
+    width: 54px;
+    min-width: 54px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 2px;
+    font-size: 0 !important;
+    line-height: 1;
+    overflow: visible;
+  }
+
+  .topbar h1 img {
+    width: 40px;
+    height: 40px;
+    margin: 0 !important;
+    object-fit: contain;
+  }
+
+  .topbar h1 span {
+    display: block;
+    width: 76px;
+    margin: 0 !important;
+    font-size: 7px !important;
+    line-height: 8px;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .topbar .right {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .topbar .right #whoami {
+    display: none !important;
+  }
+
+  .topbar .right .btn,
+  .topbar .right .add-task-btn {
+    flex: 0 1 auto;
+    min-width: 0;
+    width: auto !important;
+    height: 34px;
+    padding: 0 7px !important;
+    margin: 0 !important;
+    border-radius: 7px;
+    font-size: 9px !important;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .topbar .right #monitoringBtn {
+    max-width: 82px;
+  }
+
+  .topbar .right #logout {
+    max-width: 52px;
+  }
+
+  .topbar .right #adminSettingsBtn {
+    max-width: 72px;
+  }
+
+  .topbar .right #addTaskBtn {
+    max-width: 82px;
+  }
+}
+
+</style>
+
+<style>
+@media (max-width: 700px) {
+  .topbar h1 img {
+    width: 60px !important;
+    height: 60px !important;
+    margin: 0 !important;
+  }
+
+  .topbar h1 span#roleName {
+    width: 100px !important;
+    font-size: 11px !important;
+    font-weight: 800 !important;
+    line-height: 13px !important;
+    text-align: center !important;
+    margin: 0 !important;
+  }
+}
+</style>
+
+<style>
+.director-comment-preview {
+  max-width: 240px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.director-comment-block {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border-left: 3px solid #f97316;
+}
+
+.director-comment-title {
+  font-size: 11px;
+  font-weight: 800;
+  color: #c2410c;
+  margin-bottom: 4px;
+}
+
+.director-comment-author {
+  font-size: 10px;
+  font-weight: 800;
+  color: #9a3412;
+  margin-bottom: 4px;
+}
+
+.director-comment-text {
+  font-size: 12px;
+  line-height: 17px;
+  color: #431407;
+}
+
+@media (max-width: 700px) {
+  .director-comment-preview {
+    max-width: 150px;
+    font-size: 10px;
+    line-height: 13px;
+  }
+
+  .director-comment-block {
+    padding: 8px 9px;
+  }
+}
+</style>
+
+<style>
+/* Финальная настройка статусов карточки */
+.top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 17px;
+}
+
+.top-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.top-row-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.top-row .type-badge {
+  height: 17px;
+  min-height: 17px;
+  padding: 0 6px !important;
+  border-radius: 5px !important;
+  font-size: 10px !important;
+  font-weight: 800 !important;
+  line-height: 17px !important;
+  letter-spacing: .2px;
+}
+
+.top-row .feed-number {
+  font-size: 10px;
+  line-height: 17px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.top-row .feed-created {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.top-row .important-star {
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 17px;
+}
+
+/* Единый стиль статуса — как у Админа и Директора */
+.status-badge {
+  font-size: 10px;
+  line-height: 17px;
+  padding: 0 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.status-badge.status-open-admin {
+  color: #c2410c;
+  background: transparent;
+  border: 1px solid #f97316;
+}
+
+.status-badge.status-open-director {
+  color: #dc2626;
+  background: transparent;
+  border: 1px solid #dc2626;
+}
+
+.status-badge.status-done {
+  color: #6b7280;
+  background: transparent;
+  border: 1px solid #9ca3af;
+}
+
+.status-badge.status-review {
+  color: #2563eb;
+  background: transparent;
+  border: 1px solid #2563eb;
+  font-weight: 800;
+}
+
+.status-badge.status-rework-admin {
+  color: #c2410c;
+  background: transparent;
+  border: 1px solid #f97316;
+  font-weight: 800;
+}
+
+.status-badge.status-rework-director {
+  color: #dc2626;
+  background: transparent;
+  border: 1px solid #dc2626;
+  font-weight: 800;
+}
+
+.status-badge.status-overdue {
+  color: #dc2626;
+  background: transparent;
+  border: 0;
+  padding-left: 0;
+  padding-right: 0;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+
+  .important-star {
+    font-size: 15px;
+  }
+}
+</style>
+
+<style>
+/* Индикатор комментария директора — пузырь с точками */
+.director-mark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 15px;
+  flex: 0 0 20px;
+  color: #d97706;
+  border: 2px solid currentColor;
+  border-radius: 5px;
+  box-sizing: border-box;
+}
+
+.director-mark::before {
+  content: "•••";
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 9px;
+  letter-spacing: 0;
+  position: relative;
+  top: -1px;
+}
+
+.director-mark::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  bottom: -5px;
+  width: 6px;
+  height: 6px;
+  background: #fff;
+  border-left: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: skewY(-25deg);
+}
+</style>
+
+<style>
+/* Дата создания в первой строке карточки */
+.feed-created {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Комментарий директора в закрытой карточке */
+.closed-director-comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 5px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: #dc2626;
+  overflow: hidden;
+}
+
+.closed-director-comment > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.closed-director-comment b {
+  font-weight: 700;
+  color: #dc2626;
+}
+
+.closed-director-comment .director-mark {
+  flex: 0 0 20px;
+  margin-top: 1px;
+}
+
+@media (max-width: 700px) {
+  .feed-created {
+    font-size: 10px;
+  }
+
+  .closed-director-comment {
+    font-size: 11px;
+    line-height: 15px;
+  }
+}
+</style>
+
+<style>
+/* =========================================================
+   КОМПАКТНАЯ ШАПКА: ЛОГОТИП + ПОЛЬЗОВАТЕЛЬ
+   ========================================================= */
+
+.top-user-role,
+.top-user-login {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-user-role {
+  font-weight: 700;
+}
+
+.top-user-login {
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+/* Десктоп */
+@media (min-width: 701px) {
+  .topbar h1 {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .topbar h1 img {
+    flex-shrink: 0;
+  }
+
+  .top-user-role {
+    margin-left: 8px;
+  }
+
+  .top-user-login {
+    margin-left: 5px;
+  }
+}
+
+/* Смартфон */
+@media (max-width: 700px) {
+  .topbar {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    padding: 7px 8px;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .topbar h1 {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: 46px;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 5px !important;
+    overflow: hidden !important;
+    font-size: 0 !important;
+    line-height: 1;
+  }
+
+  .topbar h1 img {
+    flex: 0 0 auto;
+    width: 42px !important;
+    height: 42px !important;
+    margin: 0 !important;
+    object-fit: contain;
+  }
+
+  .topbar h1 .brand-title {
+    display: none !important;
+  }
+
+  .topbar h1 .top-user-role {
+    display: inline-block !important;
+    flex: 0 0 auto;
+    width: auto !important;
+    max-width: 70px;
+    margin: 0 !important;
+    font-size: 10px !important;
+    line-height: 12px !important;
+    font-weight: 800 !important;
+    white-space: nowrap !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .topbar h1 .top-user-login {
+    display: inline-block !important;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto !important;
+    max-width: 130px;
+    margin: 0 !important;
+    font-size: 10px !important;
+    line-height: 12px !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .topbar .right {
+    flex: 0 0 auto !important;
+    min-width: 0;
+    width: auto;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    overflow: hidden;
+  }
+
+  .topbar .right #whoami {
+    display: none !important;
+  }
+}
+</style>
+
+<style>
+/* Задание, созданное директором */
+.type-task-director {
+  background: #dc2626;
+  color: #fff;
+  font-weight: 800;
+}
+</style>
+
+<style>
+/* ==========================================================
+   CLIENT FILTERS V2
+   ========================================================== */
+
+.filters-panel {
+  width: 100%;
+}
+
+.filters-panel .filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.filters-panel .filter-block {
+  min-width: 0;
+}
+
+.filters-panel .filter-block + .filter-block {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.filters-panel .filter-row .filter-block + .filter-block {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.filters-panel .filter-block-title {
+  margin-bottom: 7px;
+}
+
+.filters-panel .type-filters,
+.filters-panel .sort-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.filters-panel .type-filter,
+.filters-panel .sort-filter {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filters-panel .state-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.filters-panel .state-filter {
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  height: auto;
+  padding: 7px 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  line-height: 1.1;
+}
+
+.filters-panel .state-filter span {
+  font-size: 17px;
+  line-height: 18px;
+}
+
+.filters-panel .state-filter small {
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+}
+
+.filters-panel .filter-subblock {
+  min-width: 0;
+}
+
+.filters-panel .filter-subtitle {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+
+.filters-panel .filter-select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+@media (max-width: 700px) {
+  .filters-panel .filter-row {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .filters-panel .filter-row .filter-block + .filter-block {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .filters-panel .state-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filters-panel .state-filter {
+    min-height: 54px;
+  }
+
+  .filters-panel .state-filter small {
+    font-size: 10px;
+  }
+}
+
+@media (min-width: 701px) {
+  .filters-panel .state-filter {
+    min-height: 62px;
+  }
+}
+</style>
