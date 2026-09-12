@@ -1,3 +1,76 @@
+
+async function uploadCommentMedia(files, statusEl) {
+  const uploaded = [];
+
+  for(let i = 0; i < files.length; i++) {
+    const file = files[i];
+
+    if(statusEl) {
+      statusEl.textContent = `Загрузка ${i + 1} из ${files.length}: ${file.name}`;
+      statusEl.className = "comment-media-status loading";
+    }
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: authHeaders ? authHeaders() : {},
+      body: fd
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if(!response.ok) {
+      throw new Error(data.detail || `Ошибка загрузки файла: ${file.name}`);
+    }
+
+    uploaded.push(data.filename);
+  }
+
+  if(statusEl) {
+    statusEl.textContent = `✓ Прикреплено: ${uploaded.length}`;
+    statusEl.className = "comment-media-status success";
+  }
+
+  return uploaded;
+}
+
+function updateCommentMediaSelection(input, statusEl, listEl) {
+  const files = Array.from(input.files || []);
+
+  if(files.length > 10) {
+    input.value = "";
+    if(statusEl) {
+      statusEl.textContent = "Можно выбрать не более 10 файлов";
+      statusEl.className = "comment-media-status error";
+    }
+    if(listEl) listEl.innerHTML = "";
+    return;
+  }
+
+  if(!files.length) {
+    if(statusEl) statusEl.textContent = "";
+    if(listEl) listEl.innerHTML = "";
+    return;
+  }
+
+  if(statusEl) {
+    statusEl.textContent = `Выбрано: ${files.length} ${files.length === 1 ? "файл" : "файла"}`;
+    statusEl.className = "comment-media-status";
+  }
+
+  if(listEl) {
+    listEl.innerHTML = files.map((file, i) => `
+      <div class="comment-media-file">
+        <span>📎</span>
+        <span>${String(file.name).replace(/</g, "&lt;")}</span>
+        <span class="comment-media-size">${Math.round(file.size / 1024)} КБ</span>
+      </div>
+    `).join("");
+  }
+}
+
 const API = (path, opts={}) => fetch(path, opts).then(async r => {
   if(r.status === 401){ localStorage.clear(); location.href = "/"; }
   const data = await r.json().catch(()=>({}));
@@ -308,11 +381,52 @@ const renderFeed = (items) => {
         </div>
 
         <div class="chat-input-area">
+          ${
+            isTask
+              ? `
+                <input
+                  id="media-${item.type}-${item.id}"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+                  multiple
+                  style="display:none"
+                  onchange="updateCommentMediaSelection(
+                    this,
+                    document.getElementById('media-status-${item.type}-${item.id}'),
+                    document.getElementById('media-list-${item.type}-${item.id}')
+                  )"
+                >
+                <button
+                  type="button"
+                  class="btn comment-media-attach"
+                  onclick="event.stopPropagation(); document.getElementById('media-${item.type}-${item.id}').click()"
+                  title="Прикрепить фото или видео"
+                >📎</button>
+              `
+              : ""
+          }
+
           <textarea
             id="input-${item.type}-${item.id}"
             placeholder="${inputPlaceholder}"></textarea>
+
           <button class="btn" onclick="sendMessage('${item.type}', ${item.id})">➤</button>
         </div>
+
+        ${
+          isTask
+            ? `
+              <div
+                id="media-status-${item.type}-${item.id}"
+                class="comment-media-status"
+              ></div>
+              <div
+                id="media-list-${item.type}-${item.id}"
+                class="comment-media-list"
+              ></div>
+            `
+            : ""
+        }
 
       </div>
 
@@ -326,17 +440,30 @@ const renderFeed = (items) => {
 
 window.sendMessage = async (type, id) => {
   const input = document.getElementById(`input-${type}-${id}`);
+  const mediaInput = document.getElementById(`media-${type}-${id}`);
+  const statusEl = document.getElementById(`media-status-${type}-${id}`);
+  const listEl = document.getElementById(`media-list-${type}-${id}`);
 
   if(!input) return;
 
   const text = input.value.trim();
+  const files = mediaInput
+    ? Array.from(mediaInput.files || [])
+    : [];
 
   if(!text) return;
 
+  if(files.length > 10) {
+    toast("Можно прикрепить не более 10 файлов", true);
+    return;
+  }
+
   const btn = input.nextElementSibling;
 
-  btn.disabled = true;
-  btn.textContent = "...";
+  if(btn) {
+    btn.disabled = true;
+    btn.textContent = "...";
+  }
 
   const key = feedKey(type, id);
 
@@ -344,6 +471,12 @@ window.sendMessage = async (type, id) => {
   expandedFeedItems.add(key);
 
   try {
+    let uploaded = [];
+
+    if(files.length) {
+      uploaded = await uploadCommentMedia(files, statusEl);
+    }
+
     if(myRole === "director" || myRole === "admin") {
       await API("/api/director/comments", {
         method: "POST",
@@ -354,9 +487,11 @@ window.sendMessage = async (type, id) => {
         body: JSON.stringify({
           item_type: type,
           item_id: id,
-          text: text
+          text: text,
+          media: uploaded
         })
       });
+
     } else if(type === "task") {
       await API("/api/comments", {
         method: "POST",
@@ -367,11 +502,15 @@ window.sendMessage = async (type, id) => {
         body: JSON.stringify({
           task_id: id,
           text: text,
-          media: []
+          media: uploaded
         })
       });
+
     } else {
       // Мониторинг всегда привязан к address_id.
+      // Для старого feed медиа мониторинга пока не меняем:
+      // backend /api/monitoring для этой ветки уже имеет свою
+      // отдельную логику загрузки.
       await API("/api/monitoring", {
         method: "POST",
         headers: {
@@ -381,12 +520,29 @@ window.sendMessage = async (type, id) => {
         body: JSON.stringify({
           address_id: id,
           text: text,
-          media: []
+          media: uploaded
         })
       });
     }
 
     input.value = "";
+
+    if(mediaInput) {
+      mediaInput.value = "";
+    }
+
+    if(listEl) {
+      listEl.innerHTML = "";
+    }
+
+    if(statusEl) {
+      statusEl.textContent = uploaded.length
+        ? `✓ Прикреплено: ${uploaded.length}`
+        : "";
+      statusEl.className = uploaded.length
+        ? "comment-media-status success"
+        : "comment-media-status";
+    }
 
     await loadFeed();
 
@@ -399,12 +555,26 @@ window.sendMessage = async (type, id) => {
       });
     }
 
-  } catch(e) {
-    toast(e.message || "Ошибка отправки", true);
-  }
+    toast(
+      uploaded.length
+        ? `Сообщение отправлено · прикреплено: ${uploaded.length}`
+        : "Сообщение отправлено"
+    );
 
-  btn.disabled = false;
-  btn.textContent = "➤";
+  } catch(e) {
+    if(statusEl) {
+      statusEl.textContent = e.message || "Ошибка загрузки";
+      statusEl.className = "comment-media-status error";
+    }
+
+    toast(e.message || "Ошибка отправки", true);
+
+  } finally {
+    if(btn) {
+      btn.disabled = false;
+      btn.textContent = "➤";
+    }
+  }
 };
 
 
@@ -697,19 +867,85 @@ document.getElementById("monitoringBtn").onclick = async () => {
   const sel = document.getElementById("monCity");
   sel.innerHTML = '<option value="">— город —</option>';
   cities.forEach(c => { const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
-  document.getElementById("monAddrId").value = ""; document.getElementById("monAddrSearch").value = ""; document.getElementById("monAddrList").innerHTML = ""; document.getElementById("monText").value = "";
+  document.getElementById("monAddrId").value = "";
+  document.getElementById("monAddrSearch").value = "";
+  document.getElementById("monAddrList").innerHTML = "";
+  document.getElementById("monText").value = "";
+  const mediaInput = document.getElementById("monMedia");
+  if(mediaInput) mediaInput.value = "";
 };
 
 window.createMonitoring = async () => {
   const addrId = document.getElementById("monAddrId").value;
   const text = document.getElementById("monText").value.trim();
-  if(!addrId || !text){ toast("Заполните адрес и текст", true); return; }
+  const mediaInput = document.getElementById("monMedia");
+  const files = mediaInput ? Array.from(mediaInput.files || []) : [];
+
+  if(!addrId || !text){
+    toast("Заполните адрес и текст", true);
+    return;
+  }
+
+  if(files.length > 10){
+    toast("Можно прикрепить не более 10 файлов", true);
+    return;
+  }
+
+  const button = document.querySelector("#monitoringModal .btn:not(.secondary)");
+  if(button){
+    button.disabled = true;
+    button.textContent = "Отправка...";
+  }
+
   try {
-    await API("/api/monitoring", { method:"POST", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({ address_id: Number(addrId), text: text, media: [] }) });
+    const uploaded = [];
+
+    for(const file of files){
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd
+      });
+
+      if(!response.ok){
+        let message = "Ошибка загрузки файла";
+        try {
+          const error = await response.json();
+          message = error.detail || message;
+        } catch(e) {}
+        throw new Error(message);
+      }
+
+      const media = await response.json();
+      uploaded.push(media.filename);
+    }
+
+    await API("/api/monitoring", {
+      method:"POST",
+      headers:{"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({
+        address_id: Number(addrId),
+        text: text,
+        media: uploaded
+      })
+    });
+
     toast("✓ Запись мониторинга создана");
+    if(mediaInput) mediaInput.value = "";
     closeMonitoringModal();
     loadFeed();
-  } catch(e) { toast(e.message, true); }
+
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    if(button){
+      button.disabled = false;
+      button.textContent = "Отправить";
+    }
+  }
 };
 
 document.getElementById("taskAddrSearch").addEventListener("input", async e => {

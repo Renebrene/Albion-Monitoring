@@ -806,6 +806,19 @@
     <input type="hidden" id="taskAddrId">
     <label>Описание</label>
     <textarea id="taskDesc" placeholder="Что нужно сделать..." style="min-height:100px;margin-bottom:16px;width:100%"></textarea>
+
+    <label>Фото / видео</label>
+    <input
+      id="taskMedia"
+      type="file"
+      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+      multiple
+      style="margin-bottom:6px"
+    >
+    <div id="taskMediaHint" style="font-size:12px;color:var(--muted);margin-bottom:16px">
+      Можно прикрепить до 10 файлов
+    </div>
+
     <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeCreateTaskModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="createTask()" style="flex:1;margin:0">Создать</button></div>
   </div>
 </div>
@@ -815,20 +828,52 @@
   <div class="modal-box">
     <button class="modal-close" onclick="closeMonitoringModal()">&times;</button>
     <h3> Новая запись мониторинга</h3>
-    <label>Город</label>
-    <select id="monCity" style="margin-bottom:12px;width:100%"><option value="">— выберите город —</option></select>
-    <label>Адрес</label>
-    <input id="monAddrSearch" placeholder="Начните вводить..." style="margin-bottom:8px;width:100%">
-    <div id="monAddrList" style="max-height:200px;overflow-y:auto;margin-bottom:12px"></div>
+    <label for="monCity">Город</label>
+    <input
+      id="monCity"
+      type="text"
+      list="monCityList"
+      autocomplete="off"
+      placeholder="Начните вводить город..."
+      style="margin-bottom:12px;width:100%"
+    >
+
+    <datalist id="monCityList"></datalist>
+
+    <label for="monAddrSearch">Адрес</label>
+    <input
+      id="monAddrSearch"
+      type="text"
+      list="monAddrList"
+      autocomplete="off"
+      placeholder="Сначала выберите город..."
+      style="margin-bottom:12px;width:100%"
+    >
+
+    <datalist id="monAddrList"></datalist>
+
     <input type="hidden" id="monAddrId">
     <label>Что видите?</label>
     <textarea id="monText" placeholder="Опишите состояние экрана, повреждения..." style="min-height:100px;margin-bottom:16px;width:100%"></textarea>
+
+    <label>Фото / видео</label>
+    <input
+      id="monMedia"
+      type="file"
+      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+      multiple
+      style="margin-bottom:6px"
+    >
+    <div id="monMediaHint" style="font-size:12px;color:var(--muted);margin-bottom:16px">
+      Можно прикрепить до 10 файлов
+    </div>
+
     <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeMonitoringModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="createMonitoring()" style="flex:1;margin:0;background:#0ea5e9">Отправить</button></div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
-<script src="/static/client.js?v=106"></script>
+<script src="/static/client.js?v=109"></script>
 </body></html>
 
 <style>
@@ -1825,5 +1870,198 @@
   .filters-panel .state-filter {
     min-height: 62px;
   }
+}
+</style>
+
+<style>
+.client-ready-btn {
+  width: 28px;
+  height: 24px;
+  min-width: 28px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid #10b981;
+  border-radius: 5px;
+  background: #10b981;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.client-ready-btn:hover {
+  opacity: .9;
+}
+
+.client-media-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-attach-btn {
+  width: 40px !important;
+  min-width: 40px !important;
+  padding: 10px 0 !important;
+  font-size: 17px !important;
+}
+
+.client-chat-media-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.client-chat-media-status.loading {
+  color: var(--muted);
+}
+
+.client-chat-media-status.success {
+  color: #15803d;
+}
+
+.client-chat-media-status.error {
+  color: #b91c1c;
+}
+
+.client-chat-media-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.client-chat-media-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #d9dee5;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 11px;
+}
+
+.client-chat-media-file-name {
+  min-width: 0;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-chat-media-size {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.client-chat-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.client-chat-media-item {
+  width: 82px;
+  min-width: 82px;
+}
+
+.client-chat-media-item img,
+.client-chat-media-item video {
+  display: block;
+  width: 82px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #111827;
+}
+
+.client-chat-media-item img {
+  cursor: pointer;
+}
+
+.client-chat-media-item > div,
+.client-chat-media-item > a {
+  font-size: 9px;
+}
+
+.client-chat-media-item a {
+  color: #475569;
+  text-decoration: none;
+  margin-right: 5px;
+}
+
+.client-chat-media-item a:hover {
+  text-decoration: underline;
+}
+</style>
+
+
+<style>
+.comment-attachments,
+.client-comment-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.comment-attachment,
+.client-comment-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #d9dee5;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 11px;
+}
+
+.comment-attachment-icon,
+.client-comment-attachment > span:first-child {
+  flex: 0 0 auto;
+}
+
+.comment-attachment-name,
+.client-comment-attachment-name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+}
+
+.comment-attachment-name,
+.client-comment-attachment-name {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.comment-attachment a,
+.client-comment-attachment a {
+  flex: 0 0 auto;
+  color: #475569;
+  text-decoration: none;
+  font-size: 10px;
+}
+
+.comment-attachment a:hover,
+.client-comment-attachment a:hover {
+  text-decoration: underline;
 }
 </style>

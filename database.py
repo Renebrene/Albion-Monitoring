@@ -96,6 +96,26 @@ def init_schema():
             CREATE INDEX IF NOT EXISTS idx_addresses_manufacturer ON addresses(manufacturer);
         """)
 
+        # Медиа в комментариях директора/админа.
+        # Таблица director_comments могла быть создана предыдущей
+        # версией приложения, поэтому мигрируем безопасно.
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(director_comments)"
+                ).fetchall()
+            }
+            if "media_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE director_comments "
+                    "ADD COLUMN media_json TEXT"
+                )
+        except Exception:
+            # Если таблицы ещё нет в конкретной старой базе,
+            # ничего не ломаем — существующая логика останется.
+            pass
+
         # Настройки по умолчанию (только если таблица пустая)
         defaults = {
             "photos_enabled": "1",

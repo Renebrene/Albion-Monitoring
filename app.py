@@ -452,6 +452,137 @@ def create_task(data: TaskIn, request: Request):
     return {"ok": True, "task_id": task_id}
 
 
+@app.post("/api/tasks/{task_id}/media")
+async def add_task_media(
+    task_id: int,
+    request: Request,
+):
+    """
+    Привязать ранее загруженные временные файлы к заданию.
+    Файлы загружаются через /api/upload, а здесь получают постоянное
+    имя и запись в таблице media.
+    """
+    user = require_any(request, ["admin", "director", "service"])
+
+    data = await request.json()
+    filenames = data.get("filenames", [])
+
+    if not isinstance(filenames, list):
+        raise HTTPException(status_code=400, detail="Неверный список файлов")
+
+    if len(filenames) > 10:
+        raise HTTPException(
+            status_code=400,
+            detail="К заданию можно прикрепить не более 10 файлов"
+        )
+
+    with get_db() as conn:
+        task = conn.execute(
+            """
+            SELECT id, workflow_status
+            FROM tasks
+            WHERE id = ?
+            """,
+            (task_id,)
+        ).fetchone()
+
+        if not task:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+
+        if task["workflow_status"] in ("completed", "closed"):
+            raise HTTPException(
+                status_code=403,
+                detail="Задание завершено или отменено: изменение недоступно"
+            )
+
+        if (
+            user["role"] == "service"
+            and task["workflow_status"] not in ("open", "rework")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="К этому заданию сейчас нельзя добавлять медиа"
+            )
+
+        current_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM media WHERE task_id = ? AND report_id IS NULL",
+            (task_id,)
+        ).fetchone()["cnt"]
+
+        if current_count + len(filenames) > 10:
+            raise HTTPException(
+                status_code=400,
+                detail="К заданию можно прикрепить не более 10 файлов"
+            )
+
+        result = []
+
+        for temp_name in filenames:
+            if not isinstance(temp_name, str) or not temp_name:
+                raise HTTPException(status_code=400, detail="Неверное имя файла")
+
+            # Разрешаем только временные файлы, созданные /api/upload.
+            if not temp_name.startswith("temp_"):
+                raise HTTPException(status_code=400, detail="Недопустимый файл")
+
+            temp_path = UPLOADS_DIR / temp_name
+
+            if not temp_path.exists() or not temp_path.is_file():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Файл не найден: {temp_name}"
+                )
+
+            ext = temp_path.suffix.lower()
+
+            if ext in PHOTO_EXTENSIONS:
+                media_type = "photo"
+                prefix = "t"
+            elif ext in VIDEO_EXTENSIONS:
+                media_type = "video"
+                prefix = "t"
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Недопустимый формат файла: {ext}"
+                )
+
+            # /api/upload уже проверил глобальную настройку,
+            # но проверяем её ещё раз на этапе окончательной привязки.
+            if media_type == "photo" and get_setting("photos_enabled", "1") != "1":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Загрузка фото отключена администратором"
+                )
+
+            if media_type == "video" and get_setting("videos_enabled", "1") != "1":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Загрузка видео отключена администратором"
+                )
+
+            final_name = f"{prefix}{task_id}_{uuid.uuid4().hex}{ext}"
+            final_path = UPLOADS_DIR / final_name
+
+            temp_path.replace(final_path)
+
+            conn.execute(
+                """
+                INSERT INTO media (task_id, filename, media_type)
+                VALUES (?, ?, ?)
+                """,
+                (task_id, final_name, media_type)
+            )
+
+            result.append({
+                "filename": final_name,
+                "url": f"/uploads/{final_name}",
+                "type": media_type,
+            })
+
+    return {"ok": True, "media": result}
+
+
 @app.get("/api/tasks")
 def list_tasks(
     request: Request,
@@ -954,28 +1085,6 @@ class UserIn(BaseModel):
 class PasswordIn(BaseModel):
     new_password: str
 
-class SettingIn(BaseModel):
-    key: str
-    value: str
-
-@app.get("/api/settings")
-def get_settings_api(request: Request):
-    get_current_user(request)
-    return {
-        "photos_enabled": get_setting("photos_enabled", "1") == "1",
-        "videos_enabled": get_setting("videos_enabled", "1") == "1",
-    }
-
-@app.put("/api/settings")
-def update_setting_api(data: SettingIn, request: Request):
-    require_any(request, ["admin"])
-    if data.key not in ("photos_enabled", "videos_enabled"):
-        raise HTTPException(status_code=400, detail="Неизвестная настройка")
-    if data.value not in ("0", "1"):
-        raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
-    set_setting(data.key, data.value)
-    return {"ok": True}
-
 @app.get("/api/users")
 def list_users_api(request: Request):
     require_any(request, ["admin"])
@@ -1040,7 +1149,7 @@ def get_comments(task_id: int, request: Request):
         
         # Добавляем комментарии директора (видны всем)
         dc_rows = conn.execute("""
-            SELECT dc.id, dc.text, dc.created_at, u.login
+            SELECT dc.id, dc.text, dc.media_json, dc.created_at, u.login
             FROM director_comments dc
             JOIN users u ON u.id = dc.user_id
             WHERE dc.item_type = 'task' AND dc.item_id = ?
@@ -1048,8 +1157,9 @@ def get_comments(task_id: int, request: Request):
         """, (task_id,)).fetchall()
         
         for dc in dc_rows:
+            media = json.loads(dc["media_json"]) if dc["media_json"] else []
             comments.append({
-                "id": dc["id"], "text": dc["text"], "media": [],
+                "id": dc["id"], "text": dc["text"], "media": media,
                 "created_at": dc["created_at"], "author": dc["login"], "role": "director",
                 "is_director_comment": True
             })
@@ -1069,6 +1179,36 @@ def add_comment(data: CommentIn, request: Request):
         )
 
     with get_db() as conn:
+        task = conn.execute(
+            """
+            SELECT id, workflow_status
+            FROM tasks
+            WHERE id = ?
+            """,
+            (data.task_id,),
+        ).fetchone()
+
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail="Задание не найдено"
+            )
+
+        if task["workflow_status"] in ("completed", "closed"):
+            raise HTTPException(
+                status_code=403,
+                detail="Задание завершено или отменено: изменение недоступно"
+            )
+
+        if (
+            user["role"] == "service"
+            and task["workflow_status"] not in ("open", "rework")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="К этому заданию сейчас нельзя добавлять сообщения"
+            )
+
         conn.execute("""
             INSERT INTO comments (task_id, user_id, text, media_json)
             VALUES (?, ?, ?, ?)
@@ -1224,8 +1364,12 @@ def get_monitoring(address_id: int, request: Request):
         
         for dc in dc_rows:
             messages.append({
-                "id": dc["id"], "text": dc["text"], "media": [],
-                "created_at": dc["created_at"], "author": dc["login"], "role": "director",
+                "id": dc["id"],
+                "text": dc["text"],
+                "media": json.loads(dc["media_json"]) if dc["media_json"] else [],
+                "created_at": dc["created_at"],
+                "author": dc["login"],
+                "role": "director",
                 "is_director_comment": True
             })
         
@@ -1395,7 +1539,7 @@ def director_feed(request: Request):
         result = []
         for item in feed:
             comments = conn.execute("""
-                SELECT dc.text, dc.created_at, u.login
+                SELECT dc.text, dc.media_json, dc.created_at, u.login
                 FROM director_comments dc
                 JOIN users u ON u.id = dc.user_id
                 WHERE dc.item_type = ? AND dc.item_id = ?
@@ -1403,7 +1547,12 @@ def director_feed(request: Request):
             """, (item["type"], item["id"])).fetchall()
             
             item["director_comments"] = [
-                {"text": c["text"], "created_at": c["created_at"], "author": c["login"]}
+                {
+                    "text": c["text"],
+                    "media": json.loads(c["media_json"]) if c["media_json"] else [],
+                    "created_at": c["created_at"],
+                    "author": c["login"]
+                }
                 for c in comments
             ]
             result.append(item)
@@ -1430,6 +1579,7 @@ class DirectorCommentIn(BaseModel):
     item_type: str  # 'task' или 'monitoring'
     item_id: int
     text: str
+    media: List[str] = []
 
 @app.post("/api/director/comments")
 def add_director_comment(data: DirectorCommentIn, request: Request):
@@ -1439,14 +1589,55 @@ def add_director_comment(data: DirectorCommentIn, request: Request):
         raise HTTPException(status_code=403, detail="Только админ или директор")
     if data.item_type not in ("task", "monitoring"):
         raise HTTPException(status_code=400, detail="Неверный тип")
-    if not data.text.strip():
-        raise HTTPException(status_code=400, detail="Пустой текст")
-    
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO director_comments (item_type, item_id, user_id, text) VALUES (?, ?, ?, ?)",
-            (data.item_type, data.item_id, user["sub"], data.text.strip())
+    if not data.text.strip() and not data.media:
+        raise HTTPException(
+            status_code=400,
+            detail="Комментарий не может быть пустым: добавьте текст или файл"
         )
+    
+    import json
+
+    if len(data.media) > 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Можно прикрепить не более 10 файлов"
+        )
+
+    with get_db() as conn:
+        # Завершённые/отменённые задания полностью неизменяемы.
+        if data.item_type == "task":
+            task = conn.execute(
+                "SELECT workflow_status FROM tasks WHERE id = ?",
+                (data.item_id,)
+            ).fetchone()
+
+            if not task:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Задание не найдено"
+                )
+
+            if task["workflow_status"] in ("completed", "closed"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Задание завершено или отменено: изменение недоступно"
+                )
+
+        conn.execute(
+            """
+            INSERT INTO director_comments
+                (item_type, item_id, user_id, text, media_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                data.item_type,
+                data.item_id,
+                user["sub"],
+                data.text.strip(),
+                json.dumps(data.media, ensure_ascii=False)
+            )
+        )
+
     return {"ok": True}
 # ======================================
 
@@ -1530,9 +1721,30 @@ def get_unified_feed(request: Request):
                 "created_by_role": task["created_by_role"],
                 "is_important": bool(task["is_important"]),
                 "close_reason": task["close_reason"],
+                "media": [],
                 "messages": [],
                 "director_comments": []
             }
+
+            # Медиа самого задания.
+            # Медиа сообщений чата хранится отдельно в comments.media_json.
+            task_media = conn.execute("""
+                SELECT
+                    filename,
+                    media_type
+                FROM media
+                WHERE task_id = ?
+                  AND report_id IS NULL
+                ORDER BY created_at ASC, id ASC
+            """, (task["id"],)).fetchall()
+
+            item["media"] = [
+                {
+                    "url": f"/uploads/{m['filename']}",
+                    "type": m["media_type"]
+                }
+                for m in task_media
+            ]
 
             # Обычный чат задания.
             comments = conn.execute("""
@@ -1565,6 +1777,7 @@ def get_unified_feed(request: Request):
                 SELECT
                     dc.id,
                     dc.text,
+                    dc.media_json,
                     dc.created_at,
                     u.login
                 FROM director_comments dc
@@ -1578,6 +1791,7 @@ def get_unified_feed(request: Request):
                 item["director_comments"].append({
                     "id": dc["id"],
                     "text": dc["text"],
+                    "media": json.loads(dc["media_json"]) if dc["media_json"] else [],
                     "created_at": dc["created_at"],
                     "author": dc["login"],
                     "role": "director"
@@ -1699,6 +1913,7 @@ def get_unified_feed(request: Request):
                 SELECT
                     dc.id,
                     dc.text,
+                    dc.media_json,
                     dc.created_at,
                     u.login
                 FROM director_comments dc
@@ -1714,6 +1929,7 @@ def get_unified_feed(request: Request):
                 director_comments.append({
                     "id": dc["id"],
                     "text": dc["text"],
+                    "media": json.loads(dc["media_json"]) if dc["media_json"] else [],
                     "created_at": dc["created_at"],
                     "author": dc["login"],
                     "role": "director"

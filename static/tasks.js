@@ -94,10 +94,30 @@ const renderTasks = (tasks) => {
         <div class="chat-box" id="chat-${t.id}">
           <div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">Загрузка...</div>
         </div>
-        <div class="chat-input-area">
-          <textarea id="input-${t.id}" placeholder="Напишите ответ..."></textarea>
-          <button class="btn" onclick="sendComment(${t.id})">➤</button>
-        </div>
+        ${
+          ["completed", "closed"].includes(t.workflow_status) ||
+          (currentRole === "service" && t.workflow_status === "pending_review")
+            ? ""
+            : `
+              <div class="chat-input-area">
+                <input
+                  id="media-${t.id}"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+                  multiple
+                  style="display:none"
+                >
+                <button
+                  type="button"
+                  class="btn chat-attach-btn"
+                  onclick="document.getElementById('media-${t.id}').click()"
+                  title="Прикрепить фото или видео"
+                >📎</button>
+                <textarea id="input-${t.id}" placeholder="Напишите ответ..."></textarea>
+                <button class="btn" onclick="sendComment(${t.id})">➤</button>
+              </div>
+            `
+        }
       </div>
     `;
   }).join("");
@@ -115,7 +135,6 @@ const loadChat = async (taskId) => {
     }
     chatBox.innerHTML = comments.map(c => {
       const isMe = c.author === myLogin;
-      const isDirector = c.is_director_comment === true;
       const isDirector = c.is_director_comment === true;
       const mediaHtml = c.media && c.media.length ? `
         <div class="chat-media">
@@ -144,20 +163,82 @@ const loadChat = async (taskId) => {
 
 window.sendComment = async (taskId) => {
   const input = document.getElementById(`input-${taskId}`);
-  const text = input.value.trim();
-  if(!text) return;
-  const btn = input.nextElementSibling;
-  btn.disabled = true; btn.textContent = "...";
+  const mediaInput = document.getElementById(`media-${taskId}`);
+
+  const text = input ? input.value.trim() : "";
+  const files = mediaInput
+    ? Array.from(mediaInput.files || [])
+    : [];
+
+  if(!text && !files.length) return;
+
+  if(files.length > 10){
+    toast("Можно прикрепить не более 10 файлов", true);
+    return;
+  }
+
+  const sendBtn = input
+    ? input.nextElementSibling
+    : null;
+
+  if(sendBtn){
+    sendBtn.disabled = true;
+    sendBtn.textContent = "...";
+  }
+
   try {
+    const uploaded = [];
+
+    for(const file of files){
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const uploadResponse = await fetch("/api/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd
+      });
+
+      if(!uploadResponse.ok){
+        let message = "Ошибка загрузки файла";
+        try {
+          const err = await uploadResponse.json();
+          message = err.detail || message;
+        } catch(e) {}
+        throw new Error(message);
+      }
+
+      const media = await uploadResponse.json();
+      uploaded.push(media.filename);
+    }
+
     await API("/api/comments", {
-      method: "POST", headers: {"Content-Type":"application/json", ...authHeaders()},
-      body: JSON.stringify({ task_id: taskId, text: text, media: [] })
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders()
+      },
+      body: JSON.stringify({
+        task_id: taskId,
+        text: text,
+        media: uploaded
+      })
     });
-    input.value = "";
+
+    if(input) input.value = "";
+    if(mediaInput) mediaInput.value = "";
+
     await loadChat(taskId);
     loadTasks();
-  } catch(e) { toast(e.message, true); }
-  btn.disabled = false; btn.textContent = "➤";
+
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    if(sendBtn){
+      sendBtn.disabled = false;
+      sendBtn.textContent = "➤";
+    }
+  }
 };
 
 const loadTasks = async () => {
@@ -294,17 +375,84 @@ window.deleteTask = async (id) => {
 window.createTask = async () => {
   const addrId = document.getElementById("taskAddrId").value;
   const desc = document.getElementById("taskDesc").value.trim();
+  const mediaInput = document.getElementById("taskMedia");
+  const files = mediaInput ? Array.from(mediaInput.files || []) : [];
+
   if(!addrId){ toast("Выберите адрес", true); return; }
   if(!desc){ toast("Введите описание", true); return; }
+
+  if(files.length > 10){
+    toast("Можно прикрепить не более 10 файлов", true);
+    return;
+  }
+
+  const createBtn = document.querySelector("#createTaskModal .btn:not(.secondary)");
+  if(createBtn){
+    createBtn.disabled = true;
+    createBtn.textContent = "Создание...";
+  }
+
   try {
-    await API("/api/tasks", {
-      method: "POST", headers: {"Content-Type":"application/json", ...authHeaders()},
-      body: JSON.stringify({address_id: Number(addrId), description: desc})
+    // 1. Сначала создаём само задание.
+    const created = await API("/api/tasks", {
+      method: "POST",
+      headers: {"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({
+        address_id: Number(addrId),
+        description: desc
+      })
     });
+
+    const taskId = created.task_id;
+    const uploaded = [];
+
+    // 2. Загружаем выбранные файлы через общий механизм /api/upload.
+    for(const file of files){
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const uploadResponse = await fetch("/api/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd
+      });
+
+      if(!uploadResponse.ok){
+        let message = "Ошибка загрузки файла";
+        try {
+          const err = await uploadResponse.json();
+          message = err.detail || message;
+        } catch(e) {}
+        throw new Error(message);
+      }
+
+      const media = await uploadResponse.json();
+      uploaded.push(media.filename);
+    }
+
+    // 3. Привязываем временные файлы к заданию.
+    if(uploaded.length){
+      await API(`/api/tasks/${taskId}/media`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json", ...authHeaders()},
+        body: JSON.stringify({filenames: uploaded})
+      });
+    }
+
     toast("✓ Задание создано");
+    document.getElementById("taskDesc").value = "";
+    if(mediaInput) mediaInput.value = "";
     closeCreateTaskModal();
     loadTasks();
-  } catch(e) { toast(e.message, true); }
+
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    if(createBtn){
+      createBtn.disabled = false;
+      createBtn.textContent = "Создать";
+    }
+  }
 };
 
 document.getElementById("taskCity").addEventListener("change", () => {

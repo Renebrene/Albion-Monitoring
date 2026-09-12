@@ -974,6 +974,14 @@
       </button>
 
       <button
+        class="btn ghost settings-toggle"
+        id="settingsToggle"
+        style="display:none"
+      >
+        ⚙ Настройки
+      </button>
+
+      <button
         class="btn ghost"
         id="logout"
       >
@@ -989,7 +997,83 @@
     style="font-size:11px;color:#6b7280;margin-bottom:8px"
   ></div>
 
-  <div class="feed-search-wrap">
+  <div id="settingsPanel" class="admin-settings-panel">
+
+  <div class="settings-section">
+
+    <div class="settings-section-title">
+      НАСТРОЙКИ ПРИЛОЖЕНИЯ
+    </div>
+
+    <label class="settings-switch-row">
+      <span>
+        <strong>Фотографии</strong>
+        <small>Разрешить загрузку фотографий при мониторинге</small>
+      </span>
+      <input type="checkbox" id="settingPhotos">
+    </label>
+
+    <label class="settings-switch-row">
+      <span>
+        <strong>Видео</strong>
+        <small>Разрешить загрузку видео при мониторинге</small>
+      </span>
+      <input type="checkbox" id="settingVideos">
+    </label>
+
+  </div>
+
+  <div class="settings-section">
+
+    <div class="settings-section-title">
+      ПОЛЬЗОВАТЕЛИ
+    </div>
+
+    <div id="usersList" class="users-list"></div>
+
+    <div class="settings-subtitle">
+      ДОБАВИТЬ ПОЛЬЗОВАТЕЛЯ
+    </div>
+
+    <div class="new-user-form">
+
+      <input
+        type="text"
+        id="newUserLogin"
+        placeholder="Логин"
+        autocomplete="off"
+      >
+
+      <input
+        type="password"
+        id="newUserPassword"
+        placeholder="Пароль"
+        autocomplete="new-password"
+      >
+
+      <select id="newUserRole">
+        <option value="service">Сервис</option>
+        <option value="director">Директор</option>
+        <option value="admin">Администратор</option>
+      </select>
+
+      <button
+        type="button"
+        class="settings-create-btn"
+        id="createUserBtn"
+      >
+        Добавить пользователя
+      </button>
+
+    </div>
+
+  </div>
+
+  <div id="settingsStatus" class="settings-status"></div>
+
+</div>
+
+<div class="feed-search-wrap">
     <input
       id="feedSearch"
       class="feed-search"
@@ -1336,6 +1420,24 @@
         id="taskDescription"
         placeholder="Что необходимо сделать?"
       ></textarea>
+
+      <label for="taskMedia">
+        Фото / видео
+      </label>
+
+      <input
+        id="taskMedia"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+        multiple
+      >
+
+      <div
+        id="taskMediaHint"
+        style="font-size:12px;color:var(--muted);margin-top:6px;margin-bottom:16px"
+      >
+        Можно прикрепить до 10 файлов
+      </div>
 
       <div class="modal-footer">
 
@@ -1783,8 +1885,428 @@
   }
 }
 
+
+/* ===== ADMIN SETTINGS ===== */
+
+.admin-settings-panel {
+  display: none;
+  margin: 0 0 18px;
+  border: 1px solid #dfe3e8;
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.admin-settings-panel.open {
+  display: block;
+}
+
+.settings-section {
+  padding: 18px 20px;
+  border-bottom: 1px solid #eceff2;
+}
+
+.settings-section:last-of-type {
+  border-bottom: 0;
+}
+
+.settings-section-title {
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  color: #737b84;
+}
+
+.settings-subtitle {
+  margin: 18px 0 10px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  color: #8a9198;
+}
+
+.settings-switch-row {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+.settings-switch-row + .settings-switch-row {
+  border-top: 1px solid #f0f2f4;
+}
+
+.settings-switch-row strong {
+  display: block;
+  font-size: 15px;
+  color: #252a2f;
+}
+
+.settings-switch-row small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #858c93;
+}
+
+.settings-switch-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 28px;
+  margin: 0;
+  border-radius: 20px;
+  background: #c9ced3;
+  position: relative;
+  cursor: pointer;
+  transition: background .18s ease;
+}
+
+.settings-switch-row input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.22);
+  transition: transform .18s ease;
+}
+
+.settings-switch-row input[type="checkbox"]:checked {
+  background: #e31e24;
+}
+
+.settings-switch-row input[type="checkbox"]:checked::after {
+  transform: translateX(20px);
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 12px 14px;
+  border: 1px solid #e5e8eb;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.user-main {
+  min-width: 0;
+}
+
+.user-login {
+  font-size: 14px;
+  font-weight: 700;
+  color: #252a2f;
+  overflow-wrap: anywhere;
+}
+
+.user-role {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #818990;
+}
+
+.user-password-btn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid #d8dde2;
+  border-radius: 8px;
+  background: #fff;
+  color: #424950;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.users-empty {
+  padding: 16px;
+  text-align: center;
+  color: #858c93;
+  font-size: 13px;
+  border: 1px dashed #d8dde2;
+  border-radius: 10px;
+}
+
+.new-user-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 180px auto;
+  gap: 8px;
+}
+
+.new-user-form input,
+.new-user-form select {
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 8px 11px;
+  border: 1px solid #d8dde2;
+  border-radius: 8px;
+  background: #fff;
+  color: #252a2f;
+  font: inherit;
+}
+
+.settings-create-btn {
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: #252a2f;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.settings-status {
+  min-height: 18px;
+  padding: 0 20px 14px;
+  font-size: 12px;
+  color: #5f6870;
+}
+
+.settings-status.error {
+  color: #d71920;
+}
+
+@media (max-width: 900px) {
+  .new-user-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .settings-section {
+    padding: 15px;
+  }
+
+  .settings-switch-row {
+    gap: 12px;
+  }
+
+  .user-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .user-password-btn {
+    width: 100%;
+  }
+
+  .new-user-form {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-create-btn {
+    width: 100%;
+  }
+}
+
 </style>
-<script src="/static/admin.js"></script>
+<script src="/static/admin.js?v=110"></script>
+<script src="/static/admin-settings.js"></script>
 
 </body>
 </html>
+
+
+
+/* ===== МЕДИА В КОММЕНТАРИЯХ ===== */
+
+.comment-media-controls {
+  display:flex;
+  align-items:flex-end;
+  gap:7px;
+  flex-shrink:0;
+}
+
+.comment-media-attach {
+  width:40px;
+  min-width:40px;
+  height:38px;
+  padding:0;
+  border:1px solid #d1d5db;
+  border-radius:8px;
+  background:#f8fafc;
+  color:#475569;
+  font-size:18px;
+  line-height:36px;
+  text-align:center;
+  cursor:pointer;
+}
+
+.comment-media-attach:hover {
+  background:#eef2f7;
+}
+
+.comment-media-status {
+  margin-top:6px;
+  font-size:11px;
+  color:#64748b;
+  line-height:1.3;
+}
+
+.comment-media-status.loading {
+  color:#2563eb;
+  font-weight:700;
+}
+
+.comment-media-status.success {
+  color:#15803d;
+  font-weight:700;
+}
+
+.comment-media-status.error {
+  color:#dc2626;
+  font-weight:700;
+}
+
+.comment-media-list {
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  margin-top:5px;
+}
+
+.comment-media-file {
+  display:flex;
+  align-items:center;
+  gap:5px;
+  min-width:0;
+  padding:3px 6px;
+  background:#f8fafc;
+  border:1px solid #e5e7eb;
+  border-radius:5px;
+  font-size:10px;
+  color:#475569;
+}
+
+.comment-media-file > span:nth-child(2) {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.comment-media-size {
+  margin-left:auto;
+  color:#94a3b8;
+  white-space:nowrap;
+}
+
+.comment-media-preview {
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  margin-top:7px;
+}
+
+.comment-media-preview-item {
+  width:82px;
+}
+
+.comment-media-preview-item img,
+.comment-media-preview-item video {
+  display:block;
+  width:82px;
+  height:64px;
+  object-fit:cover;
+  border-radius:6px;
+  border:1px solid #d1d5db;
+  background:#111827;
+}
+
+.comment-media-preview-item a {
+  font-size:9px;
+  color:#475569;
+  text-decoration:none;
+}
+
+.comment-media-preview-item a:hover {
+  text-decoration:underline;
+}
+
+@media (max-width:600px) {
+  .comment-media-attach {
+    width:42px;
+    min-width:42px;
+  }
+}
+
+
+
+<style>
+.comment-attachments,
+.client-comment-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.comment-attachment,
+.client-comment-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #d9dee5;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 11px;
+}
+
+.comment-attachment-icon,
+.client-comment-attachment > span:first-child {
+  flex: 0 0 auto;
+}
+
+.comment-attachment-name,
+.client-comment-attachment-name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+}
+
+.comment-attachment-name,
+.client-comment-attachment-name {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.comment-attachment a,
+.client-comment-attachment a {
+  flex: 0 0 auto;
+  color: #475569;
+  text-decoration: none;
+  font-size: 10px;
+}
+
+.comment-attachment a:hover,
+.client-comment-attachment a:hover {
+  text-decoration: underline;
+}
+</style>

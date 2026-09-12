@@ -235,9 +235,9 @@ const renderFeed = (items) => {
       ? `№${item.id}`
       : fmtMonitoringDate(item.monitoring_date || item.created_at);
 
-    const chatHtml = (item.messages || [])
-      .filter(m => m.is_director_comment !== true)
-      .map(m => {
+    const chatMessages = (item.messages || []);
+
+    const chatHtml = chatMessages.map(m => {
       const authorName = m.author;
 
       const chatRole =
@@ -250,12 +250,56 @@ const renderFeed = (items) => {
         .replace(/>/g, "&gt;")
         .replace(/\n/g, "<br>");
 
-      return `<div class="chat-msg ${chatRole}">
+      const commentMedia = Array.isArray(m.media) ? m.media : [];
+
+      const mediaHtml = commentMedia.length
+        ? `<div class="client-comment-attachments">
+            ${commentMedia.map(media => {
+              const name = String(media || "");
+              const url = name.startsWith("/uploads/")
+                ? name
+                : `/uploads/${encodeURIComponent(name)}`;
+              const isVideo = /\\.(mp4|mov|webm|m4v)$/i.test(name);
+
+              return `
+                <div class="client-comment-attachment">
+                  <span>${isVideo ? "🎬" : "📎"}</span>
+                  <a
+                    class="client-comment-attachment-name"
+                    href="${url}"
+                    target="_blank"
+                    rel="noopener"
+                    title="Открыть файл"
+                  >
+                    ${name.replace(/</g, "&lt;")}
+                  </a>
+                  <a href="${url}" download>Скачать</a>
+                </div>
+              `;
+            }).join("")}
+          </div>`
+        : "";
+
+            return `<div class="chat-msg ${chatRole}">
         <div class="chat-author">${authorName}</div>
-        <div class="chat-bubble">${safeText}<div class="chat-time">${fmtDate(m.created_at)}</div></div>
+        <div class="chat-bubble">
+          ${safeText}
+          ${mediaHtml}
+          <div class="chat-time">${fmtDate(m.created_at)}</div>
+        </div>
       </div>`;
     }).join("") ||
       '<div style="text-align:center;color:var(--muted);font-size:12px;padding:10px">Пока нет сообщений</div>';
+
+    const taskMedia = isTask && Array.isArray(item.media)
+      ? item.media
+      : [];
+
+    const taskMediaCount = taskMedia.length;
+
+    const taskMediaIndicator = isTask && taskMediaCount
+      ? `<span class="client-media-indicator" title="Прикреплено файлов: ${taskMediaCount}">📎 ${taskMediaCount}</span>`
+      : "";
 
     let adminActions = "";
 
@@ -264,17 +308,6 @@ const renderFeed = (items) => {
       const creatorRole = item.created_by_role || item.author_role || "";
 
       let actions = "";
-
-      // Сервис отправляет задание на проверку.
-      if(myRole === "service" && ["open", "rework"].includes(ws)) {
-        actions += `
-          <button class="btn"
-            style="width:auto;margin:0;padding:6px 12px;font-size:12px;background:#10b981;color:#fff"
-            onclick="completeTask(${item.id})">
-            Готово
-          </button>
-        `;
-      }
 
       // Админ подтверждает/отклоняет задания,
       // а также может закрыть любое открытое задание.
@@ -408,6 +441,16 @@ const renderFeed = (items) => {
 
             <div class="top-row-status">
               ${statusBadge}
+
+              ${myRole === "service" && isTask && ["open", "rework"].includes(item.workflow_status || "open")
+                ? `<button
+                    class="client-ready-btn"
+                    title="Задание готово"
+                    onclick="event.stopPropagation(); completeTask(${item.id})"
+                  >✓</button>`
+                : ""}
+
+              ${taskMediaIndicator}
               ${importantIcon}
             </div>
           </div>
@@ -477,24 +520,109 @@ const renderFeed = (items) => {
                   .replace(/>/g, "&gt;")
                   .replace(/\n/g, "<br>");
 
+                const commentMedia = Array.isArray(comment.media)
+                  ? comment.media
+                  : [];
+
+                const mediaHtml = commentMedia.length
+                  ? `<div class="client-comment-attachments">
+                      ${commentMedia.map(media => {
+                        const name = String(media || "");
+                        const url = name.startsWith("/uploads/")
+                          ? name
+                          : `/uploads/${encodeURIComponent(name)}`;
+                        const isVideo = /\\.(mp4|mov|webm|m4v)$/i.test(name);
+
+                        return `
+                          <div class="client-comment-attachment">
+                            <span>${isVideo ? "🎬" : "📎"}</span>
+                            <a
+                              class="client-comment-attachment-name"
+                              href="${url}"
+                              target="_blank"
+                              rel="noopener"
+                              title="Открыть файл"
+                            >
+                              ${name.replace(/</g, "&lt;")}
+                            </a>
+                            <a href="${url}" download>Скачать</a>
+                          </div>
+                        `;
+                      }).join("")}
+                    </div>`
+                  : "";
+
                 return `<div class="director-comment-block">
                   <div class="director-comment-author">
                     Директор${comment.created_at
                       ? ` (${fmtDirectorDate(comment.created_at)})`
                       : ""}
                   </div>
-                  <div class="director-comment-text">${commentText}</div>
+                  <div class="director-comment-text">
+                    ${commentText}
+                    ${mediaHtml}
+                  </div>
                 </div>`;
               }).join("")}
             </div>`
           : ''}
 
-        <div class="chat-input-area">
-          <textarea
-            id="input-${item.type}-${item.id}"
-            placeholder="${inputPlaceholder}"></textarea>
-          <button class="btn" onclick="sendMessage('${item.type}', ${item.id})">➤</button>
-        </div>
+        ${
+          isTask && (
+            ["completed", "closed"].includes(item.workflow_status) ||
+            (myRole === "service" && item.workflow_status === "pending_review")
+          )
+            ? ""
+            : `<div class="chat-input-area">
+                ${myRole !== "director"
+                  ? `
+                    <input
+                      id="media-${item.type}-${item.id}"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+                      multiple
+                      style="display:none"
+                      onchange="updateClientChatMediaSelection(
+                        this,
+                        document.getElementById('media-status-${item.type}-${item.id}'),
+                        document.getElementById('media-list-${item.type}-${item.id}')
+                      )"
+                    >
+
+                    <button
+                      type="button"
+                      class="btn chat-attach-btn"
+                      onclick="event.stopPropagation(); document.getElementById('media-${item.type}-${item.id}').click()"
+                      title="Прикрепить фото или видео"
+                    >📎</button>
+                  `
+                  : ""}
+
+                <textarea
+                  id="input-${item.type}-${item.id}"
+                  placeholder="${inputPlaceholder}"></textarea>
+
+                <button
+                  id="send-${item.type}-${item.id}"
+                  class="btn"
+                  onclick="sendMessage('${item.type}', ${item.id})"
+                >➤</button>
+              </div>
+
+              ${myRole !== "director"
+                ? `
+                  <div
+                    id="media-status-${item.type}-${item.id}"
+                    class="client-chat-media-status"
+                  ></div>
+
+                  <div
+                    id="media-list-${item.type}-${item.id}"
+                    class="client-chat-media-list"
+                  ></div>
+                `
+                : ""}`
+        }
 
       </div>
 
@@ -506,6 +634,103 @@ const renderFeed = (items) => {
   });
 };
 
+window.updateClientChatMediaSelection = (input, statusEl, listEl) => {
+  const files = Array.from(input.files || []);
+
+  if(files.length > 10) {
+    input.value = "";
+
+    if(statusEl) {
+      statusEl.textContent = "Можно выбрать не более 10 файлов";
+      statusEl.className = "client-chat-media-status error";
+    }
+
+    if(listEl) {
+      listEl.innerHTML = "";
+    }
+
+    return;
+  }
+
+  if(!files.length) {
+    if(statusEl) {
+      statusEl.textContent = "";
+      statusEl.className = "client-chat-media-status";
+    }
+
+    if(listEl) {
+      listEl.innerHTML = "";
+    }
+
+    return;
+  }
+
+  if(statusEl) {
+    statusEl.textContent =
+      `Выбрано: ${files.length} ${files.length === 1 ? "файл" : "файла"}`;
+    statusEl.className = "client-chat-media-status";
+  }
+
+  if(listEl) {
+    listEl.innerHTML = files.map(file => `
+      <div class="client-chat-media-file">
+        <span>📎</span>
+        <span class="client-chat-media-file-name">
+          ${String(file.name)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;")}
+        </span>
+        <span class="client-chat-media-size">
+          ${Math.round(file.size / 1024)} КБ
+        </span>
+      </div>
+    `).join("");
+  }
+};
+
+const uploadClientChatMedia = async (files, statusEl) => {
+  const uploaded = [];
+
+  for(let i = 0; i < files.length; i++) {
+    const file = files[i];
+
+    if(statusEl) {
+      statusEl.textContent =
+        `Загрузка ${i + 1} из ${files.length}: ${file.name}`;
+      statusEl.className = "client-chat-media-status loading";
+    }
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: authHeaders(),
+      body: fd
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if(!response.ok) {
+      throw new Error(
+        data.detail || `Ошибка загрузки файла: ${file.name}`
+      );
+    }
+
+    uploaded.push(data.filename);
+  }
+
+  if(statusEl) {
+    statusEl.textContent = `✓ Прикреплено: ${uploaded.length}`;
+    statusEl.className = "client-chat-media-status success";
+  }
+
+  return uploaded;
+};
+
 window.sendMessage = async (type, id) => {
   const input = document.getElementById(`input-${type}-${id}`);
 
@@ -513,9 +738,25 @@ window.sendMessage = async (type, id) => {
 
   const text = input.value.trim();
 
-  if(!text) return;
+  const mediaInput =
+    document.getElementById(`media-${type}-${id}`);
 
-  const btn = input.nextElementSibling;
+  const files = mediaInput
+    ? Array.from(mediaInput.files || [])
+    : [];
+
+  if(!text && !files.length) return;
+
+  if(files.length > 10) {
+    toast("Можно прикрепить не более 10 файлов", true);
+    return;
+  }
+
+  const btn =
+    document.getElementById(`send-${type}-${id}`);
+
+  const mediaStatus =
+    document.getElementById(`media-status-${type}-${id}`);
 
   btn.disabled = true;
   btn.textContent = "...";
@@ -541,21 +782,29 @@ window.sendMessage = async (type, id) => {
           })
         });
       } else {
+        const uploaded = files.length
+          ? await uploadClientChatMedia(files, mediaStatus)
+          : [];
+
         await API("/api/comments", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders()
-        },
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
           body: JSON.stringify({
             task_id: id,
             text: text,
-            media: []
+            media: uploaded
           })
         });
       }
     } else {
-      // Для мониторинга id теперь является address_id.
+      // Для мониторинга id является address_id.
+      const uploaded = files.length
+        ? await uploadClientChatMedia(files, mediaStatus)
+        : [];
+
       await API("/api/monitoring", {
         method: "POST",
         headers: {
@@ -565,12 +814,16 @@ window.sendMessage = async (type, id) => {
         body: JSON.stringify({
           address_id: id,
           text: text,
-          media: []
+          media: uploaded
         })
       });
     }
 
     input.value = "";
+
+    if(mediaInput) {
+      mediaInput.value = "";
+    }
 
     await loadFeed();
 
@@ -918,23 +1171,214 @@ window.createTask = async () => {
 // Создание мониторинга (Сервис, но можно расширить)
 document.getElementById("monitoringBtn").onclick = async () => {
   document.getElementById("monitoringModal").classList.add("active");
-  const cities = await API("/api/cities");
-  const sel = document.getElementById("monCity");
-  sel.innerHTML = '<option value="">— город —</option>';
-  cities.forEach(c => { const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
-  document.getElementById("monAddrId").value = ""; document.getElementById("monAddrSearch").value = ""; document.getElementById("monAddrList").innerHTML = ""; document.getElementById("monText").value = "";
+
+  await loadServiceMonitoringAddresses();
+
+  document.getElementById("monCity").value = "";
+  document.getElementById("monAddrId").value = "";
+  document.getElementById("monAddrSearch").value = "";
+  document.getElementById("monText").value = "";
+
+  const mediaInput = document.getElementById("monMedia");
+  if(mediaInput) mediaInput.value = "";
 };
 
+// ============================================================
+// Адреса мониторинга Сервиса
+// Поведение как у Admin / Director при создании задания
+// ============================================================
+
+const escServiceAddress = (value) => {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
+let serviceMonitoringAddresses = [];
+
+const loadServiceMonitoringAddresses = async () => {
+  try {
+    serviceMonitoringAddresses = await API("/api/addresses?limit=10000");
+
+    const cityList = document.getElementById("monCityList");
+
+    if(cityList) {
+      const cities = [...new Set(
+        serviceMonitoringAddresses
+          .map(a => String(a.city || "").trim())
+          .filter(Boolean)
+      )].sort((a, b) => a.localeCompare(b, "ru"));
+
+      cityList.innerHTML = cities
+        .map(city => `<option value="${escServiceAddress(city)}"></option>`)
+        .join("");
+    }
+
+    updateServiceMonitoringAddressList();
+
+  } catch(e) {
+    serviceMonitoringAddresses = [];
+    toast("Не удалось загрузить адреса", true);
+  }
+};
+
+const updateServiceMonitoringAddressList = () => {
+  const cityInput = document.getElementById("monCity");
+  const addressInput = document.getElementById("monAddrSearch");
+  const addressId = document.getElementById("monAddrId");
+  const addressList = document.getElementById("monAddrList");
+
+  if(!cityInput || !addressInput || !addressId || !addressList) return;
+
+  const city = cityInput.value.trim().toLowerCase();
+
+  addressList.innerHTML = "";
+  addressId.value = "";
+
+  if(!city) {
+    addressInput.value = "";
+    addressInput.placeholder = "Сначала выберите город...";
+    return;
+  }
+
+  const matches = serviceMonitoringAddresses
+    .filter(a =>
+      String(a.city || "").trim().toLowerCase() === city
+    )
+    .sort((a, b) =>
+      String(a.address_name || "").localeCompare(
+        String(b.address_name || ""),
+        "ru"
+      )
+    );
+
+  addressList.innerHTML = matches
+    .map(a => `<option value="${escServiceAddress(a.address_name || "")}"></option>`)
+    .join("");
+
+  addressInput.placeholder =
+    matches.length
+      ? "Начните вводить адрес..."
+      : "Адресов для города нет";
+
+  const selected = matches.find(a =>
+    String(a.address_name || "").trim().toLowerCase() ===
+    addressInput.value.trim().toLowerCase()
+  );
+
+  if(selected) {
+    addressId.value = selected.id;
+  }
+};
+
+const resolveServiceMonitoringAddress = () => {
+  const cityInput = document.getElementById("monCity");
+  const addressInput = document.getElementById("monAddrSearch");
+  const addressId = document.getElementById("monAddrId");
+
+  if(!cityInput || !addressInput || !addressId) return null;
+
+  const city = cityInput.value.trim().toLowerCase();
+  const name = addressInput.value.trim().toLowerCase();
+
+  const address = serviceMonitoringAddresses.find(a =>
+    String(a.city || "").trim().toLowerCase() === city &&
+    String(a.address_name || "").trim().toLowerCase() === name
+  );
+
+  addressId.value = address ? address.id : "";
+
+  return address || null;
+};
+
+document.getElementById("monCity").addEventListener("input", () => {
+  updateServiceMonitoringAddressList();
+});
+
+document.getElementById("monAddrSearch").addEventListener("input", () => {
+  resolveServiceMonitoringAddress();
+});
+
 window.createMonitoring = async () => {
+  const selectedAddress = resolveServiceMonitoringAddress();
   const addrId = document.getElementById("monAddrId").value;
   const text = document.getElementById("monText").value.trim();
-  if(!addrId || !text){ toast("Заполните адрес и текст", true); return; }
+  const mediaInput = document.getElementById("monMedia");
+  const files = mediaInput ? Array.from(mediaInput.files || []) : [];
+
+  if(!selectedAddress || !addrId || !text){
+    toast(
+      !selectedAddress
+        ? "Выберите адрес из списка"
+        : "Заполните адрес и текст",
+      true
+    );
+    return;
+  }
+
+  if(files.length > 10){
+    toast("Можно прикрепить не более 10 файлов", true);
+    return;
+  }
+
+  const button = document.querySelector("#monitoringModal .btn:not(.secondary)");
+  if(button){
+    button.disabled = true;
+    button.textContent = "Отправка...";
+  }
+
   try {
-    await API("/api/monitoring", { method:"POST", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({ address_id: Number(addrId), text: text, media: [] }) });
+    const uploaded = [];
+
+    for(const file of files){
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd
+      });
+
+      if(!response.ok){
+        let message = "Ошибка загрузки файла";
+        try {
+          const error = await response.json();
+          message = error.detail || message;
+        } catch(e) {}
+        throw new Error(message);
+      }
+
+      const media = await response.json();
+      uploaded.push(media.filename);
+    }
+
+    await API("/api/monitoring", {
+      method:"POST",
+      headers:{"Content-Type":"application/json", ...authHeaders()},
+      body: JSON.stringify({
+        address_id: Number(addrId),
+        text: text,
+        media: uploaded
+      })
+    });
+
     toast("✓ Запись мониторинга создана");
+    if(mediaInput) mediaInput.value = "";
     closeMonitoringModal();
     loadFeed();
-  } catch(e) { toast(e.message, true); }
+
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    if(button){
+      button.disabled = false;
+      button.textContent = "Отправить";
+    }
+  }
 };
 
 document.getElementById("taskAddrSearch").addEventListener("input", async e => {
@@ -944,14 +1388,6 @@ document.getElementById("taskAddrSearch").addEventListener("input", async e => {
   document.getElementById("taskAddrList").innerHTML = rows.map(r => `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%" onclick="pickTaskAddr(${r.id}, '${r.address_name.replace(/'/g, "\\'")}')">${r.address_name}</button>`).join("");
 });
 window.pickTaskAddr = (id, name) => { document.getElementById("taskAddrId").value = id; document.getElementById("taskAddrSearch").value = name; document.getElementById("taskAddrList").innerHTML = ""; };
-
-document.getElementById("monAddrSearch").addEventListener("input", async e => {
-  const city = document.getElementById("monCity").value;
-  if(!city) return;
-  const rows = await API(`/api/addresses?city=${encodeURIComponent(city)}&q=${encodeURIComponent(e.target.value)}`);
-  document.getElementById("monAddrList").innerHTML = rows.map(r => `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%" onclick="pickMonAddr(${r.id}, '${r.address_name.replace(/'/g, "\\'")}')">${r.address_name}</button>`).join("");
-});
-window.pickMonAddr = (id, name) => { document.getElementById("monAddrId").value = id; document.getElementById("monAddrSearch").value = name; document.getElementById("monAddrList").innerHTML = ""; };
 
 window.toggleImportant = async (taskId, value) => {
   try {

@@ -1,3 +1,115 @@
+
+const authHeaders = () => ({
+  "Authorization": "Bearer " + localStorage.getItem("token")
+});
+
+
+function renderDirectorCommentMedia(media) {
+  if(!Array.isArray(media) || !media.length) return "";
+
+  return `
+    <div class="comment-attachments">
+      ${media.map((m, index) => {
+        const name = String(m || "");
+        const url = name.startsWith("/uploads/")
+          ? name
+          : `/uploads/${encodeURIComponent(name)}`;
+
+        const isVideo = /\\.(mp4|mov|webm|m4v)$/i.test(name);
+
+        return `
+          <div class="comment-attachment">
+            <span class="comment-attachment-icon">${isVideo ? "🎬" : "📎"}</span>
+            <a
+              class="comment-attachment-name"
+              href="${url}"
+              target="_blank"
+              rel="noopener"
+              title="Открыть файл"
+            >
+              ${name.replace(/</g, "&lt;")}
+            </a>
+            <a href="${url}" download>Скачать</a>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+
+async function uploadCommentMedia(files, statusEl) {
+  const uploaded = [];
+
+  for(let i = 0; i < files.length; i++) {
+    const file = files[i];
+
+    if(statusEl) {
+      statusEl.textContent = `Загрузка ${i + 1} из ${files.length}: ${file.name}`;
+      statusEl.className = "comment-media-status loading";
+    }
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: authHeaders ? authHeaders() : {},
+      body: fd
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if(!response.ok) {
+      throw new Error(data.detail || `Ошибка загрузки файла: ${file.name}`);
+    }
+
+    uploaded.push(data.filename);
+  }
+
+  if(statusEl) {
+    statusEl.textContent = `✓ Прикреплено: ${uploaded.length}`;
+    statusEl.className = "comment-media-status success";
+  }
+
+  return uploaded;
+}
+
+function updateCommentMediaSelection(input, statusEl, listEl) {
+  const files = Array.from(input.files || []);
+
+  if(files.length > 10) {
+    input.value = "";
+    if(statusEl) {
+      statusEl.textContent = "Можно выбрать не более 10 файлов";
+      statusEl.className = "comment-media-status error";
+    }
+    if(listEl) listEl.innerHTML = "";
+    return;
+  }
+
+  if(!files.length) {
+    if(statusEl) statusEl.textContent = "";
+    if(listEl) listEl.innerHTML = "";
+    return;
+  }
+
+  if(statusEl) {
+    statusEl.textContent = `Выбрано: ${files.length} ${files.length === 1 ? "файл" : "файла"}`;
+    statusEl.className = "comment-media-status";
+  }
+
+  if(listEl) {
+    listEl.innerHTML = files.map((file, i) => `
+      <div class="comment-media-file">
+        <span>📎</span>
+        <span>${String(file.name).replace(/</g, "&lt;")}</span>
+        <span class="comment-media-size">${Math.round(file.size / 1024)} КБ</span>
+      </div>
+    `).join("");
+  }
+}
+
 const API = async (url, options = {}) => {
   const token = localStorage.getItem("token");
 
@@ -332,6 +444,7 @@ const renderFeed = items => {
         </div>
         <div class="director-comment-text">
           ${esc(String(c.text || "")).replace(/\\n/g, "<br>")}
+          ${renderDirectorCommentMedia(c.media)}
         </div>
       </div>
     `).join("");
@@ -487,6 +600,26 @@ const renderFeed = items => {
             class="chat-input-wrap"
             onclick="event.stopPropagation()"
           >
+            <input
+              id="dc-media-${item.type}-${item.id}"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+              multiple
+              style="display:none"
+              onchange="updateCommentMediaSelection(
+                this,
+                document.getElementById('dc-media-status-${item.type}-${item.id}'),
+                document.getElementById('dc-media-list-${item.type}-${item.id}')
+              )"
+            >
+
+            <button
+              type="button"
+              class="comment-media-attach"
+              title="Прикрепить фото или видео"
+              onclick="event.stopPropagation(); document.getElementById('dc-media-${item.type}-${item.id}').click()"
+            >📎</button>
+
             <textarea
               id="dc-input-${item.type}-${item.id}"
               placeholder="Оставить комментарий..."
@@ -499,6 +632,16 @@ const renderFeed = items => {
             >
               Отправить
             </button>
+
+            <div
+              id="dc-media-status-${item.type}-${item.id}"
+              class="comment-media-status"
+            ></div>
+
+            <div
+              id="dc-media-list-${item.type}-${item.id}"
+              class="comment-media-list"
+            ></div>
           </div>
 
         </div>
@@ -820,49 +963,92 @@ window.closeDirectorTask = async (taskId) => {
 
 window.sendDirectorComment = async (type, id) => {
   const input = document.getElementById(`dc-input-${type}-${id}`);
+  const mediaInput = document.getElementById(`dc-media-${type}-${id}`);
+  const statusEl = document.getElementById(`dc-media-status-${type}-${id}`);
+  const listEl = document.getElementById(`dc-media-list-${type}-${id}`);
 
   if(!input) return;
 
   const text = input.value.trim();
+  const files = mediaInput
+    ? Array.from(mediaInput.files || [])
+    : [];
 
-  if(!text) {
-    toast("Введите сообщение");
+  if(!text && !files.length) {
+    toast("Введите сообщение или прикрепите файл");
+    return;
+  }
+
+  if(files.length > 10) {
+    toast("Можно прикрепить не более 10 файлов", true);
     return;
   }
 
   expandedFeedItems.add(feedKey(type, id));
 
+  const sendBtn = input.parentElement
+    ? input.parentElement.querySelector(".send-chat-btn")
+    : null;
+
+  if(sendBtn) {
+    sendBtn.disabled = true;
+    sendBtn.textContent = "Отправка...";
+  }
+
   try {
-    let url;
-    let body;
+    let uploaded = [];
+
+    if(files.length) {
+      uploaded = await uploadCommentMedia(files, statusEl);
+    }
 
     if(type === "monitoring") {
-      url = "/api/monitoring";
-      body = {
-        address_id: id,
-        text,
-        media: []
-      };
+      await API("/api/director/comments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          item_type: "monitoring",
+          item_id: id,
+          text,
+          media: uploaded
+        })
+      });
     } else if(type === "task") {
-      url = "/api/comments";
-      body = {
-        task_id: id,
-        text,
-        media: []
-      };
+      await API("/api/comments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          task_id: id,
+          text,
+          media: uploaded
+        })
+      });
     } else {
       throw new Error("Неизвестный тип сообщения");
     }
 
-    await API(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    });
-
     input.value = "";
+
+    if(mediaInput) {
+      mediaInput.value = "";
+    }
+
+    if(listEl) {
+      listEl.innerHTML = "";
+    }
+
+    if(statusEl) {
+      statusEl.textContent = uploaded.length
+        ? `✓ Прикреплено: ${uploaded.length}`
+        : "";
+      statusEl.className = uploaded.length
+        ? "comment-media-status success"
+        : "comment-media-status";
+    }
 
     await loadFeed();
 
@@ -878,10 +1064,24 @@ window.sendDirectorComment = async (type, id) => {
       }
     });
 
-    toast("Сообщение отправлено");
+    toast(
+      uploaded.length
+        ? `Сообщение отправлено · прикреплено: ${uploaded.length}`
+        : "Сообщение отправлено"
+    );
 
   } catch(e) {
-    toast(e.message || "Ошибка отправки сообщения");
+    if(statusEl) {
+      statusEl.textContent = e.message || "Ошибка загрузки";
+      statusEl.className = "comment-media-status error";
+    }
+
+    toast(e.message || "Ошибка отправки сообщения", true);
+  } finally {
+    if(sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = "Отправить";
+    }
   }
 };
 
@@ -1025,6 +1225,8 @@ window.createDirectorTask = async () => {
   const addressId = document.getElementById("taskAddressId");
   const description = document.getElementById("taskDescription");
   const important = document.getElementById("taskImportant");
+  const mediaInput = document.getElementById("taskMedia");
+  const files = mediaInput ? Array.from(mediaInput.files || []) : [];
 
   if(!city?.value.trim()) {
     toast("Выберите город");
@@ -1043,6 +1245,11 @@ window.createDirectorTask = async () => {
   if(!description?.value.trim()) {
     toast("Введите текст задания");
     description?.focus();
+    return;
+  }
+
+  if(files.length > 10) {
+    toast("Можно прикрепить не более 10 файлов");
     return;
   }
 
@@ -1065,6 +1272,52 @@ window.createDirectorTask = async () => {
         is_important: Boolean(important?.checked)
       })
     });
+
+    const taskId = result.task_id;
+    const uploaded = [];
+
+    for(const file of files) {
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const uploadResponse = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          ...(localStorage.getItem("token")
+            ? {"Authorization": `Bearer ${localStorage.getItem("token")}`}
+            : {})
+        },
+        body: fd
+      });
+
+      if(!uploadResponse.ok) {
+        let message = "Ошибка загрузки файла";
+        try {
+          const error = await uploadResponse.json();
+          message = error.detail || message;
+        } catch(e) {}
+        throw new Error(message);
+      }
+
+      const media = await uploadResponse.json();
+      uploaded.push(media.filename);
+    }
+
+    if(uploaded.length) {
+      await API(`/api/tasks/${taskId}/media`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          filenames: uploaded
+        })
+      });
+    }
+
+    if(mediaInput) {
+      mediaInput.value = "";
+    }
 
     closeTaskModal();
 
