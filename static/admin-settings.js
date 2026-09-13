@@ -27,7 +27,9 @@
   const roleNames = {
     admin: "Администратор",
     director: "Директор",
-    service: "Сервис"
+    service: "Сервис",
+    crew: "Экипаж",
+    head: "Руководитель"
   };
 
   const setStatus = (text, error = false) => {

@@ -71,7 +71,9 @@ def require_any(request: Request, roles: list) -> dict:
 ROLE_LABELS = {
     "admin": "Админ",
     "service": "Сервис",
-    "director": "Руководитель",
+    "director": "Директор",
+    "crew": "Экипаж",
+    "head": "Руководитель",
 }
 
 # На какую страницу попадает каждая роль после входа
@@ -79,5 +81,7 @@ ROLE_HOME = {
     "admin": "/admin",
     "service": "/client",
     "director": "/director",
+    "crew": "/crew",
+    "head": "/head",
 }
 

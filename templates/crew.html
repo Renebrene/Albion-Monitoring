@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Альбион — Экипаж</title>
+
+  <style>
+    :root {
+      --blue: #2563eb;
+      --blue-dark: #1d4ed8;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --bg: #f5f7fa;
+      --white: #ffffff;
+      --danger: #dc2626;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      min-height: 100vh;
+    }
+
+    /* ---------- HEADER ---------- */
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+
+      min-height: 64px;
+      padding: 10px 16px;
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand img {
+      width: 38px;
+      height: 38px;
+      object-fit: contain;
+      flex: 0 0 auto;
+    }
+
+    .brand-text {
+      min-width: 0;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+
+    .brand-subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .logout-btn {
+      flex: 0 0 auto;
+
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+
+      padding: 9px 13px;
+      border-radius: 9px;
+
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .logout-btn:active {
+      background: #f3f4f6;
+    }
+
+    /* ---------- MAIN ---------- */
+
+    .container {
+      width: 100%;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 18px 14px 40px;
+    }
+
+    .section-title {
+      margin: 0 0 14px;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    /* ---------- REPORT FORM ---------- */
+
+    .report-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    }
+
+    .field {
+      margin-bottom: 15px;
+    }
+
+    .field:last-child {
+      margin-bottom: 0;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 6px;
+
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    input[type="text"],
+    textarea {
+      width: 100%;
+
+      border: 1px solid #d1d5db;
+      border-radius: 9px;
+
+      background: #fff;
+      color: var(--text);
+
+      font: inherit;
+      font-size: 16px;
+
+      padding: 11px 12px;
+
+      outline: none;
+    }
+
+    input[type="text"]:focus,
+    textarea:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10);
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+
+    /* ---------- MEDIA ---------- */
+
+    .media-button {
+      width: 100%;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+
+      min-height: 48px;
+
+      border: 1px solid #bfdbfe;
+      border-radius: 9px;
+
+      background: #fff;
+      color: var(--blue);
+
+      font-size: 15px;
+      font-weight: 700;
+
+      cursor: pointer;
+    }
+
+    .media-button:active {
+      background: #eff6ff;
+    }
+
+    .media-button-icon {
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .media-input {
+      display: none;
+    }
+
+    .media-hint {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .selected-media {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .selected-media-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+
+      padding: 8px 10px;
+
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #f9fafb;
+
+      font-size: 13px;
+    }
+
+    .selected-media-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .selected-media-type {
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+
+    /* ---------- SEND ---------- */
+
+    .send-button {
+      width: 100%;
+      min-height: 50px;
+
+      border: 0;
+      border-radius: 9px;
+
+      background: var(--blue);
+      color: #fff;
+
+      font-size: 16px;
+      font-weight: 800;
+
+      cursor: pointer;
+    }
+
+    .send-button:hover {
+      background: var(--blue-dark);
+    }
+
+    .send-button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .form-message {
+      margin-top: 10px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .form-message.error {
+      color: var(--danger);
+    }
+
+    .form-message.success {
+      color: #15803d;
+    }
+
+    /* ---------- HISTORY ---------- */
+
+    .history-section {
+      margin-top: 28px;
+    }
+
+    .history-title {
+      margin: 0 0 12px;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .history-empty {
+      padding: 18px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+
+      color: var(--muted);
+      text-align: center;
+      font-size: 14px;
+    }
+
+    .report-card-history {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .report-summary {
+      width: 100%;
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+
+      padding: 13px 14px;
+
+      background: #fff;
+      border: 0;
+
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .report-summary-main {
+      min-width: 0;
+    }
+
+    .report-address {
+      font-size: 14px;
+      font-weight: 700;
+
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .report-city {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .report-date {
+      flex: 0 0 auto;
+
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .report-details {
+      display: none;
+      padding: 0 14px 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .report-details.open {
+      display: block;
+    }
+
+    .report-text {
+      padding-top: 12px;
+
+      font-size: 14px;
+      line-height: 1.5;
+
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .report-media {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .report-media a {
+      display: block;
+    }
+
+    .report-media img,
+    .report-media video {
+      display: block;
+
+      width: 100%;
+      max-height: 220px;
+
+      object-fit: cover;
+
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #f3f4f6;
+    }
+
+    .report-no-content {
+      padding-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* ---------- MOBILE ---------- */
+
+    @media (max-width: 560px) {
+      .topbar {
+        min-height: 58px;
+        padding: 8px 10px;
+      }
+
+      .brand img {
+        width: 34px;
+        height: 34px;
+      }
+
+      .brand-title {
+        font-size: 16px;
+      }
+
+      .brand-subtitle {
+        display: none;
+      }
+
+      .logout-btn {
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+
+      .container {
+        padding: 14px 10px 30px;
+      }
+
+      .report-card {
+        padding: 13px;
+      }
+
+      textarea {
+        min-height: 130px;
+      }
+
+      .report-media {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img
+      src="/static/logo.png"
+      alt="Альбион"
+      onerror="this.style.display='none'"
+    >
+
+    <div class="brand-text">
+      <div class="brand-title">Альбион. Мониторинг</div>
+      <div class="brand-subtitle">Экипаж</div>
+    </div>
+  </div>
+
+  <button class="logout-btn" id="logout">Выйти</button>
+</header>
+
+<main class="container">
+
+  <h2 class="section-title">Новый отчёт</h2>
+
+  <section class="report-card">
+
+    <div class="field">
+      <label for="crewCity">Город</label>
+
+      <input
+        id="crewCity"
+        type="text"
+        list="crewCityList"
+        autocomplete="off"
+        placeholder="Начните вводить город..."
+      >
+
+      <datalist id="crewCityList"></datalist>
+    </div>
+
+    <div class="field">
+      <label for="crewAddress">Адрес / Конструкция</label>
+
+      <input
+        id="crewAddress"
+        type="text"
+        list="crewAddressList"
+        autocomplete="off"
+        placeholder="Сначала выберите город..."
+      >
+
+      <datalist id="crewAddressList"></datalist>
+
+      <input type="hidden" id="crewAddressId">
+    </div>
+
+    <div class="field">
+      <label for="crewText">
+        Состояние / Комментарий / Описание
+      </label>
+
+      <textarea
+        id="crewText"
+        placeholder="Опишите состояние конструкции..."
+      ></textarea>
+    </div>
+
+    <div class="field">
+      <label>Фото / видео</label>
+
+      <label class="media-button" for="crewMedia">
+        <span class="media-button-icon">📷</span>
+        <span>Добавить фото/видео</span>
+      </label>
+
+      <input
+        class="media-input"
+        id="crewMedia"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+        multiple
+      >
+
+      <div class="media-hint">
+        Можно прикрепить фото и видео. Файлы будут добавлены к отчёту.
+      </div>
+
+      <div class="selected-media" id="crewSelectedMedia"></div>
+    </div>
+
+    <button
+      class="send-button"
+      id="sendCrewReport"
+      type="button"
+    >
+      Отправить отчёт
+    </button>
+
+    <div id="crewFormMessage" class="form-message"></div>
+
+  </section>
+
+  <section class="history-section">
+
+    <h2 class="history-title">Предыдущие отчёты</h2>
+
+    <div id="crewHistory" class="history-list">
+      <div class="history-empty">
+        Загрузка...
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<script src="/static/crew.js"></script>
+
+</body>
+</html>

@@ -12,6 +12,7 @@ uploads/
 
 *.bak
 *.before_*
+*.before-*
 
 # Temporary development scripts
 apply_frontend_workflow.py

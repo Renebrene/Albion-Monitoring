@@ -255,11 +255,57 @@ const renderFeed = (items) => {
       const mediaHtml = commentMedia.length
         ? `<div class="client-comment-attachments">
             ${commentMedia.map(media => {
-              const name = String(media || "");
-              const url = name.startsWith("/uploads/")
-                ? name
-                : `/uploads/${encodeURIComponent(name)}`;
-              const isVideo = /\\.(mp4|mov|webm|m4v)$/i.test(name);
+              let name = "";
+              let url = "";
+              let mediaType = "";
+
+              if (media && typeof media === "object") {
+                url = String(media.url || "");
+                mediaType = String(media.type || media.media_type || "");
+
+                if (url) {
+                  name = url.split("/").pop() || "Файл";
+                }
+              } else {
+                name = String(media || "");
+
+                url = name.startsWith("/uploads/")
+                  ? name
+                  : `/uploads/${encodeURIComponent(name)}`;
+              }
+
+              if (!url) {
+                return "";
+              }
+
+              const isImage =
+                mediaType === "photo" ||
+                /\\.(jpg|jpeg|png|webp|gif)$/i.test(name);
+
+              const isVideo =
+                mediaType === "video" ||
+                /\\.(mp4|mov|webm|m4v)$/i.test(name);
+
+              if (isImage) {
+                return `
+                  <div class="client-comment-attachment client-comment-image-attachment">
+                    <a
+                      href="${url}"
+                      target="_blank"
+                      rel="noopener"
+                      title="Открыть фотографию"
+                    >
+                      <img
+                        src="${url}"
+                        class="client-comment-image"
+                        alt="Фото"
+                        loading="lazy"
+                      >
+                    </a>
+                    <a href="${url}" download>Скачать</a>
+                  </div>
+                `;
+              }
 
               return `
                 <div class="client-comment-attachment">
@@ -503,13 +549,15 @@ const renderFeed = (items) => {
 
         ${adminActions}
 
-        <div style="margin-top:16px;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:8px">
-          💬 Обсуждение
-        </div>
+        ${isTask ? `
+          <div style="margin-top:16px;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:8px">
+            💬 Обсуждение
+          </div>
 
-        <div class="chat-box" id="chat-${item.type}-${item.id}">
-          ${chatHtml}
-        </div>
+          <div class="chat-box" id="chat-${item.type}-${item.id}">
+            ${chatHtml}
+          </div>
+        ` : ""}
 
         ${directorComments.length
           ? `<div class="director-comments-block">
@@ -568,12 +616,14 @@ const renderFeed = (items) => {
           : ''}
 
         ${
-          isTask && (
-            ["completed", "closed"].includes(item.workflow_status) ||
-            (myRole === "service" && item.workflow_status === "pending_review")
-          )
+          !isTask
             ? ""
-            : `<div class="chat-input-area">
+            : (
+                ["completed", "closed"].includes(item.workflow_status) ||
+                (myRole === "service" && item.workflow_status === "pending_review")
+              )
+                ? ""
+                : `<div class="chat-input-area">
                 ${myRole !== "director"
                   ? `
                     <input
@@ -762,6 +812,7 @@ window.sendMessage = async (type, id) => {
   btn.textContent = "...";
 
   const key = feedKey(type, id);
+  let newMonitoringId = null;
 
   // Карточка после отправки должна остаться раскрытой.
   expandedFeedItems.add(key);
@@ -800,23 +851,42 @@ window.sendMessage = async (type, id) => {
         });
       }
     } else {
-      // Для мониторинга id является address_id.
+      // Для мониторинга id карточки = report_id.
+      // Новый отчет создается для address_id текущей карточки.
+      const item = allFeed.find(
+        x => x.type === "monitoring" && x.id === id
+      );
+
+      if(!item || !item.address_id) {
+        throw new Error("Не удалось определить адрес мониторинга");
+      }
+
       const uploaded = files.length
         ? await uploadClientChatMedia(files, mediaStatus)
         : [];
 
-      await API("/api/monitoring", {
+      const monitoringResult = await API("/api/monitoring", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...authHeaders()
         },
         body: JSON.stringify({
-          address_id: id,
+          address_id: item.address_id,
           text: text,
           media: uploaded
         })
       });
+
+      // После отправки должна открыться именно новая карточка.
+      if(monitoringResult && monitoringResult.report_id) {
+        newMonitoringId = monitoringResult.report_id;
+
+        expandedFeedItems.delete(key);
+        expandedFeedItems.add(
+          feedKey("monitoring", newMonitoringId)
+        );
+      }
     }
 
     input.value = "";
@@ -828,7 +898,14 @@ window.sendMessage = async (type, id) => {
     await loadFeed();
 
     // После перерисовки снова прокручиваем чат вниз.
-    const box = document.getElementById(`chat-${type}-${id}`);
+    // Для мониторинга используем ID только что созданного report.
+    const boxId =
+      type === "monitoring" && newMonitoringId
+        ? newMonitoringId
+        : id;
+
+    const box =
+      document.getElementById(`chat-${type}-${boxId}`);
 
     if(box) {
       requestAnimationFrame(() => {

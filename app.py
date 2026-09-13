@@ -88,6 +88,12 @@ class ReportIn(BaseModel):
     media: List[str] = []   # список имён загруженных файлов
 
 
+class CrewReportIn(BaseModel):
+    address_id: int
+    text: str = ""
+    media: List[str] = []   # список имён загруженных файлов
+
+
 class TaskIn(BaseModel):
     address_id: int
     description: str
@@ -334,6 +340,362 @@ def create_report(data: ReportIn, request: Request):
             )
 
     return {"ok": True, "report_id": report_id}
+
+
+# ---------- Отчёты Экипажа ----------
+@app.post("/api/crew/reports")
+def create_crew_report(data: CrewReportIn, request: Request):
+    user = require_role(request, "crew")
+
+    text = data.text.strip()
+
+    if not text and not data.media:
+        raise HTTPException(
+            status_code=400,
+            detail="Добавьте описание или хотя бы один файл",
+        )
+
+    if len(data.media) > MAX_MEDIA_PER_REPORT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Слишком много файлов (макс. {MAX_MEDIA_PER_REPORT})",
+        )
+
+    with get_db() as conn:
+        addr = conn.execute(
+            """
+            SELECT id
+            FROM addresses
+            WHERE id = ? AND active = 1
+            """,
+            (data.address_id,),
+        ).fetchone()
+
+        if not addr:
+            raise HTTPException(status_code=400, detail="Адрес не найден")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO crew_monitorings
+                (address_id, user_id, text)
+            VALUES (?, ?, ?)
+            """,
+            (data.address_id, user["sub"], text),
+        )
+
+        report_id = cursor.lastrowid
+
+        for temp_name in data.media:
+            if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
+                continue
+
+            old_path = UPLOADS_DIR / temp_name
+
+            if not old_path.exists():
+                continue
+
+            ext = old_path.suffix.lower()
+
+            if ext in VIDEO_EXTENSIONS:
+                media_type = "video"
+            elif ext in PHOTO_EXTENSIONS:
+                media_type = "photo"
+            else:
+                continue
+
+            new_name = f"cr{report_id}_{uuid.uuid4().hex[:8]}{ext}"
+
+            old_path.rename(UPLOADS_DIR / new_name)
+
+            conn.execute(
+                """
+                INSERT INTO crew_monitoring_media
+                    (crew_monitoring_id, filename, media_type)
+                VALUES (?, ?, ?)
+                """,
+                (report_id, new_name, media_type),
+            )
+
+    return {
+        "ok": True,
+        "report_id": report_id,
+    }
+
+
+@app.get("/api/crew/reports")
+def list_crew_reports(request: Request):
+    user = require_role(request, "crew")
+
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                cr.id,
+                cr.address_id,
+                cr.created_at,
+                cr.text,
+                a.city,
+                a.address_name,
+                a.manufacturer
+            FROM crew_monitorings cr
+            JOIN addresses a ON a.id = cr.address_id
+            WHERE cr.user_id = ?
+            ORDER BY cr.created_at DESC, cr.id DESC
+            """,
+            (user["sub"],),
+        ).fetchall()
+
+        result = []
+
+        for row in rows:
+            media_rows = conn.execute(
+                """
+                SELECT id, filename, media_type, created_at
+                FROM crew_monitoring_media
+                WHERE crew_monitoring_id = ?
+                ORDER BY id
+                """,
+                (row["id"],),
+            ).fetchall()
+
+            result.append({
+                "id": row["id"],
+                "address_id": row["address_id"],
+                "city": row["city"],
+                "address_name": row["address_name"],
+                "manufacturer": row["manufacturer"],
+                "text": row["text"],
+                "created_at": row["created_at"],
+                "media": [
+                    {
+                        "id": media["id"],
+                        "filename": media["filename"],
+                        "url": f"/uploads/{media['filename']}",
+                        "media_type": media["media_type"],
+                        "created_at": media["created_at"],
+                    }
+                    for media in media_rows
+                ],
+            })
+
+    return result
+
+
+
+# ============================================================
+# HEAD / РУКОВОДИТЕЛЬ — отчёты экипажа
+# ============================================================
+
+@app.get("/api/head/reports")
+def list_head_reports(request: Request):
+    user = require_role(request, "head")
+
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                cr.id,
+                cr.address_id,
+                cr.user_id,
+                cr.created_at,
+                cr.text,
+                a.city,
+                a.address_name,
+                a.manufacturer,
+                u.login AS author_login
+            FROM crew_monitorings cr
+            JOIN addresses a ON a.id = cr.address_id
+            JOIN users u ON u.id = cr.user_id
+            ORDER BY cr.created_at DESC, cr.id DESC
+            """
+        ).fetchall()
+
+        result = []
+
+        for row in rows:
+            media_rows = conn.execute(
+                """
+                SELECT id, filename, media_type, created_at
+                FROM crew_monitoring_media
+                WHERE crew_monitoring_id = ?
+                ORDER BY id
+                """,
+                (row["id"],),
+            ).fetchall()
+
+            result.append({
+                "id": row["id"],
+                "address_id": row["address_id"],
+                "user_id": row["user_id"],
+                "city": row["city"],
+                "address_name": row["address_name"],
+                "manufacturer": row["manufacturer"],
+                "author_login": row["author_login"],
+                "text": row["text"],
+                "created_at": row["created_at"],
+                "media": [
+                    {
+                        "id": media["id"],
+                        "filename": media["filename"],
+                        "url": f"/uploads/{media['filename']}",
+                        "media_type": media["media_type"],
+                        "created_at": media["created_at"],
+                    }
+                    for media in media_rows
+                ],
+            })
+
+    return result
+
+
+@app.get("/api/head/reports/{report_id}/comments")
+def list_head_report_comments(report_id: int, request: Request):
+    user = require_role(request, "head")
+
+    with get_db() as conn:
+        report = conn.execute(
+            "SELECT id FROM crew_monitorings WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+
+        if not report:
+            raise HTTPException(status_code=404, detail="Отчёт не найден")
+
+        rows = conn.execute(
+            """
+            SELECT
+                c.id,
+                c.crew_monitoring_id,
+                c.user_id,
+                c.text,
+                c.created_at,
+                u.login AS author_login,
+                u.role AS author_role
+            FROM crew_report_comments c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.crew_monitoring_id = ?
+            ORDER BY c.created_at ASC, c.id ASC
+            """,
+            (report_id,),
+        ).fetchall()
+
+        result = []
+
+        for row in rows:
+            media_rows = conn.execute(
+                """
+                SELECT id, filename, media_type, created_at
+                FROM crew_report_comment_media
+                WHERE comment_id = ?
+                ORDER BY id
+                """,
+                (row["id"],),
+            ).fetchall()
+
+            result.append({
+                "id": row["id"],
+                "crew_monitoring_id": row["crew_monitoring_id"],
+                "user_id": row["user_id"],
+                "author_login": row["author_login"],
+                "author_role": row["author_role"],
+                "text": row["text"],
+                "created_at": row["created_at"],
+                "media": [
+                    {
+                        "id": media["id"],
+                        "filename": media["filename"],
+                        "url": f"/uploads/{media['filename']}",
+                        "media_type": media["media_type"],
+                        "created_at": media["created_at"],
+                    }
+                    for media in media_rows
+                ],
+            })
+
+    return result
+
+
+class HeadReportCommentIn(BaseModel):
+    text: str = ""
+    media: List[str] = []
+
+
+@app.post("/api/head/reports/{report_id}/comments")
+def create_head_report_comment(
+    report_id: int,
+    data: HeadReportCommentIn,
+    request: Request,
+):
+    user = require_role(request, "head")
+
+    text = data.text.strip()
+
+    if not text and not data.media:
+        raise HTTPException(
+            status_code=400,
+            detail="Добавьте комментарий или хотя бы один файл",
+        )
+
+    if len(data.media) > MAX_MEDIA_PER_REPORT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Слишком много файлов (макс. {MAX_MEDIA_PER_REPORT})",
+        )
+
+    with get_db() as conn:
+        report = conn.execute(
+            "SELECT id FROM crew_monitorings WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+
+        if not report:
+            raise HTTPException(status_code=404, detail="Отчёт не найден")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO crew_report_comments
+                (crew_monitoring_id, user_id, text)
+            VALUES (?, ?, ?)
+            """,
+            (report_id, user["sub"], text),
+        )
+
+        comment_id = cursor.lastrowid
+
+        for temp_name in data.media:
+            if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
+                continue
+
+            old_path = UPLOADS_DIR / temp_name
+
+            if not old_path.exists():
+                continue
+
+            ext = old_path.suffix.lower()
+
+            if ext in VIDEO_EXTENSIONS:
+                media_type = "video"
+            elif ext in PHOTO_EXTENSIONS:
+                media_type = "photo"
+            else:
+                continue
+
+            new_name = f"crc{comment_id}_{uuid.uuid4().hex[:8]}{ext}"
+            old_path.rename(UPLOADS_DIR / new_name)
+
+            conn.execute(
+                """
+                INSERT INTO crew_report_comment_media
+                    (comment_id, filename, media_type)
+                VALUES (?, ?, ?)
+                """,
+                (comment_id, new_name, media_type),
+            )
+
+    return {
+        "ok": True,
+        "comment_id": comment_id,
+    }
 
 
 @app.get("/api/reports")
@@ -1095,7 +1457,7 @@ def list_users_api(request: Request):
 @app.post("/api/users")
 def create_user_api(data: UserIn, request: Request):
     require_any(request, ["admin"])
-    if data.role not in ("admin", "service", "director"):
+    if data.role not in ("admin", "service", "director", "crew", "head"):
         raise HTTPException(status_code=400, detail="Неверная роль")
     with get_db() as conn:
         exists = conn.execute("SELECT 1 FROM users WHERE login = ?", (data.login,)).fetchone()
@@ -1623,20 +1985,56 @@ def add_director_comment(data: DirectorCommentIn, request: Request):
                     detail="Задание завершено или отменено: изменение недоступно"
                 )
 
-        conn.execute(
-            """
-            INSERT INTO director_comments
-                (item_type, item_id, user_id, text, media_json)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                data.item_type,
-                data.item_id,
-                user["sub"],
-                data.text.strip(),
-                json.dumps(data.media, ensure_ascii=False)
+            conn.execute(
+                """
+                INSERT INTO director_comments
+                    (item_type, item_id, user_id, text, media_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    data.item_type,
+                    data.item_id,
+                    user["sub"],
+                    data.text.strip(),
+                    json.dumps(data.media, ensure_ascii=False)
+                )
             )
-        )
+
+        else:
+            # Новый мониторинг = конкретная запись reports.
+            # item_id для новых комментариев также содержит report_id,
+            # а report_id используется как основная привязка.
+            report = conn.execute(
+                """
+                SELECT id
+                FROM reports
+                WHERE id = ?
+                  AND task_id IS NULL
+                """,
+                (data.item_id,)
+            ).fetchone()
+
+            if not report:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Мониторинг не найден"
+                )
+
+            conn.execute(
+                """
+                INSERT INTO director_comments
+                    (item_type, item_id, report_id, user_id, text, media_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data.item_type,
+                    data.item_id,
+                    data.item_id,
+                    user["sub"],
+                    data.text.strip(),
+                    json.dumps(data.media, ensure_ascii=False)
+                )
+            )
 
     return {"ok": True}
 # ======================================
@@ -1650,6 +2048,16 @@ def admin_page(request: Request):
 @app.get("/director", response_class=HTMLResponse)
 def director_page(request: Request):
     return templates.TemplateResponse("director.html", {"request": request})
+
+
+@app.get("/crew", response_class=HTMLResponse)
+def crew_page(request: Request):
+    return templates.TemplateResponse("crew.html", {"request": request})
+
+
+@app.get("/head", response_class=HTMLResponse)
+def head_page(request: Request):
+    return templates.TemplateResponse("head.html", {"request": request})
 
 
 # ========== ЕДИНАЯ ЛЕНТА (МОНИТОРИНГ + ЗАДАНИЯ) ==========
@@ -1844,71 +2252,59 @@ def get_unified_feed(request: Request):
         # =========================================================
         # 2. МОНИТОРИНГ
         # =========================================================
-        monitoring_addresses = conn.execute("""
+        # Каждая запись reports = отдельная карточка мониторинга.
+        # Сообщения одного адреса больше не объединяются.
+        monitoring_reports = conn.execute("""
             SELECT
-                a.id AS address_id,
-                a.city,
-                a.address_name,
-                a.manufacturer,
-                MAX(r.created_at) AS last_activity
-            FROM addresses a
-            JOIN reports r
-              ON r.address_id = a.id
-             AND r.task_id IS NULL
-            WHERE a.active = 1
-            GROUP BY
-                a.id,
+                r.id,
+                r.address_id,
+                r.text,
+                r.created_at,
+                u.login,
+                u.role,
                 a.city,
                 a.address_name,
                 a.manufacturer
-            ORDER BY last_activity DESC
+            FROM reports r
+            JOIN users u
+              ON u.id = r.user_id
+            JOIN addresses a
+              ON a.id = r.address_id
+            WHERE r.task_id IS NULL
+              AND a.active = 1
+            ORDER BY r.created_at DESC
             LIMIT 300
         """).fetchall()
 
-        for address in monitoring_addresses:
-            address_id = address["address_id"]
+        for r in monitoring_reports:
+            report_id = r["id"]
+            address_id = r["address_id"]
 
-            # Только обычные сообщения мониторинга.
-            reports = conn.execute("""
-                SELECT
-                    r.id,
-                    r.text,
-                    r.created_at,
-                    u.login,
-                    u.role
-                FROM reports r
-                JOIN users u ON u.id = r.user_id
-                WHERE r.address_id = ?
-                  AND r.task_id IS NULL
-                ORDER BY r.created_at ASC
-            """, (address_id,)).fetchall()
+            media = conn.execute("""
+                SELECT filename, media_type
+                FROM media
+                WHERE report_id = ?
+                ORDER BY id ASC
+            """, (report_id,)).fetchall()
 
-            messages = []
+            message = {
+                "id": report_id,
+                "text": r["text"],
+                "created_at": r["created_at"],
+                "author": r["login"],
+                "role": r["role"],
+                "media": [
+                    {
+                        "url": f"/uploads/{m['filename']}",
+                        "type": m["media_type"]
+                    }
+                    for m in media
+                ],
+                "is_director_comment": False
+            }
 
-            for r in reports:
-                media = conn.execute("""
-                    SELECT filename, media_type
-                    FROM media
-                    WHERE report_id = ?
-                """, (r["id"],)).fetchall()
-
-                messages.append({
-                    "id": r["id"],
-                    "text": r["text"],
-                    "created_at": r["created_at"],
-                    "author": r["login"],
-                    "role": r["role"],
-                    "media": [
-                        {
-                            "url": f"/uploads/{m['filename']}",
-                            "type": m["media_type"]
-                        }
-                        for m in media
-                    ],
-                    "is_director_comment": False
-                })
-
-            # Комментарии директора — отдельно.
+            # На первом этапе новые комментарии директора
+            # будут привязываться к конкретному report_id.
             director_comments_rows = conn.execute("""
                 SELECT
                     dc.id,
@@ -1917,11 +2313,29 @@ def get_unified_feed(request: Request):
                     dc.created_at,
                     u.login
                 FROM director_comments dc
-                JOIN users u ON u.id = dc.user_id
+                JOIN users u
+                  ON u.id = dc.user_id
                 WHERE dc.item_type = 'monitoring'
-                  AND dc.item_id = ?
+                  AND (
+                      dc.report_id = ?
+                      OR (
+                          dc.report_id IS NULL
+                          AND dc.item_id = ?
+                          AND ? = (
+                              SELECT MAX(r2.id)
+                              FROM reports r2
+                              WHERE r2.address_id = ?
+                                AND r2.task_id IS NULL
+                          )
+                      )
+                  )
                 ORDER BY dc.created_at ASC
-            """, (address_id,)).fetchall()
+            """, (
+                report_id,
+                address_id,
+                report_id,
+                address_id
+            )).fetchall()
 
             director_comments = []
 
@@ -1929,48 +2343,45 @@ def get_unified_feed(request: Request):
                 director_comments.append({
                     "id": dc["id"],
                     "text": dc["text"],
-                    "media": json.loads(dc["media_json"]) if dc["media_json"] else [],
+                    "media": (
+                        json.loads(dc["media_json"])
+                        if dc["media_json"] else []
+                    ),
                     "created_at": dc["created_at"],
                     "author": dc["login"],
                     "role": "director"
                 })
 
-            if not messages:
-                # Адрес без обычных сообщений не создаёт карточку
-                # только из-за комментария директора.
-                continue
-
-            first_message = messages[0]
-            last_message = messages[-1]
-
             item = {
                 "type": "monitoring",
 
-                # ID карточки мониторинга = ID адреса.
-                # reports.id остаётся ID отдельного сообщения.
-                "id": address_id,
+                # Теперь ID карточки = ID записи reports.
+                "id": report_id,
+
+                # ID адреса сохраняется отдельно.
                 "address_id": address_id,
 
-                "text": first_message["text"],
-                "created_at": first_message["created_at"],
-                "monitoring_date": first_message["created_at"],
+                "text": r["text"],
+                "created_at": r["created_at"],
+                "monitoring_date": r["created_at"],
 
-                "city": address["city"],
-                "address_name": address["address_name"],
-                "manufacturer": address["manufacturer"],
-                "author": first_message["author"],
+                "city": r["city"],
+                "address_name": r["address_name"],
+                "manufacturer": r["manufacturer"],
+                "author": r["login"],
 
                 "status": "open",
                 "is_important": False,
                 "close_reason": None,
 
-                "messages": messages,
+                # Одна карточка = одна запись мониторинга.
+                "messages": [message],
+
                 "director_comments": director_comments,
                 "has_director_comment": bool(director_comments),
 
-                # Только обычное сообщение.
-                "last_message_at": last_message["created_at"],
-                "last_message_author": last_message["author"]
+                "last_message_at": r["created_at"],
+                "last_message_author": r["login"]
             }
 
             result.append(item)

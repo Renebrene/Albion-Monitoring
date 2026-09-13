@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Альбион — Руководитель</title>
+
+  <style>
+    :root {
+      --blue: #2563eb;
+      --blue-dark: #1d4ed8;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --bg: #f5f7fa;
+      --white: #ffffff;
+      --danger: #dc2626;
+      --success: #15803d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      min-height: 100vh;
+    }
+
+    /* ---------- HEADER ---------- */
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+
+      min-height: 64px;
+      padding: 10px 16px;
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand img {
+      width: 38px;
+      height: 38px;
+      object-fit: contain;
+      flex: 0 0 auto;
+    }
+
+    .brand-text {
+      min-width: 0;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+
+    .brand-subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .logout-btn {
+      flex: 0 0 auto;
+
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+
+      padding: 9px 13px;
+      border-radius: 9px;
+
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .logout-btn:active {
+      background: #f3f4f6;
+    }
+
+    /* ---------- MAIN ---------- */
+
+    .container {
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 18px 14px 40px;
+    }
+
+    .section-title {
+      margin: 0 0 14px;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    .message {
+      margin-bottom: 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    /* ---------- REPORT CARD ---------- */
+
+    .report-card {
+      margin-bottom: 10px;
+
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    }
+
+    .report-summary {
+      width: 100%;
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+
+      padding: 13px 15px;
+
+      border: 0;
+      background: #fff;
+      color: var(--text);
+
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .report-summary:active {
+      background: #f9fafb;
+    }
+
+    .report-summary-main {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .report-address {
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    .report-city {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .report-date {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .report-details {
+      display: none;
+      padding: 0 15px 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .report-details.open {
+      display: block;
+    }
+
+    .report-meta {
+      padding-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .report-meta strong {
+      color: var(--text);
+    }
+
+    .report-text {
+      margin-top: 12px;
+      padding: 11px 12px;
+
+      background: #f9fafb;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+
+      font-size: 15px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    /* ---------- MEDIA ---------- */
+
+    .report-media {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .report-media a {
+      display: block;
+      overflow: hidden;
+
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #f9fafb;
+    }
+
+    .report-media img,
+    .report-media video {
+      display: block;
+      width: 100%;
+      height: 180px;
+      object-fit: cover;
+    }
+
+    /* ---------- COMMENTS ---------- */
+
+    .comments-title {
+      margin-top: 20px;
+      margin-bottom: 9px;
+
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .comment {
+      margin-top: 8px;
+      padding: 10px 11px;
+
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #fff;
+    }
+
+    .comment-meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .comment-text {
+      margin-top: 6px;
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .comment-empty {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .comment-form {
+      margin-top: 12px;
+    }
+
+    .comment-textarea {
+      width: 100%;
+      min-height: 100px;
+      resize: vertical;
+
+      border: 1px solid #d1d5db;
+      border-radius: 9px;
+
+      background: #fff;
+      color: var(--text);
+
+      font: inherit;
+      font-size: 15px;
+      line-height: 1.45;
+
+      padding: 11px 12px;
+      outline: none;
+    }
+
+    .comment-textarea:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10);
+    }
+
+    /* ---------- COMMENT MEDIA ---------- */
+
+    .media-button {
+      width: 100%;
+      margin-top: 9px;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+
+      min-height: 46px;
+
+      border: 1px solid #bfdbfe;
+      border-radius: 9px;
+
+      background: #fff;
+      color: var(--blue);
+
+      font-size: 14px;
+      font-weight: 700;
+
+      cursor: pointer;
+    }
+
+    .media-button:active {
+      background: #eff6ff;
+    }
+
+    .media-button-icon {
+      font-size: 19px;
+      line-height: 1;
+    }
+
+    .media-input {
+      display: none;
+    }
+
+    .selected-media {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .selected-media-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+
+      padding: 7px 9px;
+
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #f9fafb;
+
+      font-size: 12px;
+    }
+
+    .selected-media-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .selected-media-type {
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+
+    /* ---------- SEND ---------- */
+
+    .comment-send {
+      width: 100%;
+      margin-top: 9px;
+
+      min-height: 46px;
+
+      border: 0;
+      border-radius: 9px;
+
+      background: var(--blue);
+      color: #fff;
+
+      font-size: 15px;
+      font-weight: 700;
+
+      cursor: pointer;
+    }
+
+    .comment-send:hover {
+      background: var(--blue-dark);
+    }
+
+    .comment-send:disabled {
+      opacity: 0.65;
+      cursor: default;
+    }
+
+    .form-message {
+      margin-top: 7px;
+      font-size: 13px;
+    }
+
+    .form-message.error {
+      color: var(--danger);
+    }
+
+    .form-message.success {
+      color: var(--success);
+    }
+
+    /* ---------- MOBILE ---------- */
+
+    @media (max-width: 560px) {
+      .topbar {
+        padding: 9px 11px;
+      }
+
+      .brand-title {
+        font-size: 16px;
+      }
+
+      .brand-subtitle {
+        font-size: 11px;
+      }
+
+      .brand img {
+        width: 34px;
+        height: 34px;
+      }
+
+      .container {
+        padding: 15px 10px 30px;
+      }
+
+      .report-summary {
+        padding: 12px;
+      }
+
+      .report-details {
+        padding: 0 12px 14px;
+      }
+
+      .report-date {
+        font-size: 11px;
+      }
+
+      .report-media {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .report-media img,
+      .report-media video {
+        height: 145px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img
+      src="/static/logo.png"
+      alt="Альбион"
+      onerror="this.style.display='none'"
+    >
+
+    <div class="brand-text">
+      <div class="brand-title">Альбион. Мониторинг</div>
+      <div class="brand-subtitle">Руководитель</div>
+    </div>
+  </div>
+
+  <button class="logout-btn" id="logout">Выйти</button>
+</header>
+
+<main class="container">
+
+  <h2 class="section-title">Отчёты экипажа</h2>
+
+  <div id="headMessage" class="message">
+    Загрузка...
+  </div>
+
+  <div id="headReports"></div>
+
+</main>
+
+<script src="/static/head.js"></script>
+
+</body>
+</html>

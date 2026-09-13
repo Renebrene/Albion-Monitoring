@@ -67,6 +67,47 @@ def init_schema():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Отдельные мониторинги Экипажа.
+            -- Не связаны с обычными service-мониторингами из reports.
+            CREATE TABLE IF NOT EXISTS crew_monitorings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address_id INTEGER NOT NULL REFERENCES addresses(id),
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                text TEXT NOT NULL
+            );
+
+            -- Фото и видео мониторингов Экипажа.
+            CREATE TABLE IF NOT EXISTS crew_monitoring_media (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                crew_monitoring_id INTEGER NOT NULL
+                    REFERENCES crew_monitorings(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                media_type TEXT NOT NULL CHECK(media_type IN ('photo','video')),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Комментарии Руководителя к отчётам Экипажа.
+            CREATE TABLE IF NOT EXISTS crew_report_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                crew_monitoring_id INTEGER NOT NULL
+                    REFERENCES crew_monitorings(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id),
+                text TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Фото и видео в комментариях Руководителя.
+            CREATE TABLE IF NOT EXISTS crew_report_comment_media (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                comment_id INTEGER NOT NULL
+                    REFERENCES crew_report_comments(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                media_type TEXT NOT NULL CHECK(media_type IN ('photo','video')),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 address_id INTEGER NOT NULL REFERENCES addresses(id),
@@ -90,6 +131,26 @@ def init_schema():
             CREATE INDEX IF NOT EXISTS idx_reports_task ON reports(task_id);
             CREATE INDEX IF NOT EXISTS idx_media_report ON media(report_id);
             CREATE INDEX IF NOT EXISTS idx_media_task ON media(task_id);
+            CREATE INDEX IF NOT EXISTS idx_crew_monitorings_address
+                ON crew_monitorings(address_id);
+            CREATE INDEX IF NOT EXISTS idx_crew_monitorings_created
+                ON crew_monitorings(created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_crew_report_comments_report
+                ON crew_report_comments(crew_monitoring_id);
+
+            CREATE INDEX IF NOT EXISTS idx_crew_report_comments_created
+                ON crew_report_comments(created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_crew_report_comments_user
+                ON crew_report_comments(user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_crew_report_comment_media
+                ON crew_report_comment_media(comment_id);
+            CREATE INDEX IF NOT EXISTS idx_crew_monitorings_user
+                ON crew_monitorings(user_id);
+            CREATE INDEX IF NOT EXISTS idx_crew_monitoring_media
+                ON crew_monitoring_media(crew_monitoring_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
             CREATE INDEX IF NOT EXISTS idx_addresses_city ON addresses(city);
@@ -111,6 +172,17 @@ def init_schema():
                     "ALTER TABLE director_comments "
                     "ADD COLUMN media_json TEXT"
                 )
+
+            if "report_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE director_comments "
+                    "ADD COLUMN report_id INTEGER REFERENCES reports(id)"
+                )
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dc_report "
+                "ON director_comments(report_id)"
+            )
         except Exception:
             # Если таблицы ещё нет в конкретной старой базе,
             # ничего не ломаем — существующая логика останется.
