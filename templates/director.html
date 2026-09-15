@@ -1072,6 +1072,191 @@
     }
 
   </style>
+
+<style>
+/* ===== МЕДИА В КОММЕНТАРИЯХ ===== */
+
+.comment-media-controls {
+  display:flex;
+  align-items:flex-end;
+  gap:7px;
+  flex-shrink:0;
+}
+
+.comment-media-attach {
+  width:40px;
+  min-width:40px;
+  height:38px;
+  padding:0;
+  border:1px solid #d1d5db;
+  border-radius:8px;
+  background:#f8fafc;
+  color:#475569;
+  font-size:18px;
+  line-height:36px;
+  text-align:center;
+  cursor:pointer;
+}
+
+.comment-media-attach:hover {
+  background:#eef2f7;
+}
+
+.comment-media-status {
+  margin-top:6px;
+  font-size:11px;
+  color:#64748b;
+  line-height:1.3;
+}
+
+.comment-media-status.loading {
+  color:#2563eb;
+  font-weight:700;
+}
+
+.comment-media-status.success {
+  color:#15803d;
+  font-weight:700;
+}
+
+.comment-media-status.error {
+  color:#dc2626;
+  font-weight:700;
+}
+
+.comment-media-list {
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  margin-top:5px;
+}
+
+.comment-media-file {
+  display:flex;
+  align-items:center;
+  gap:5px;
+  min-width:0;
+  padding:3px 6px;
+  background:#f8fafc;
+  border:1px solid #e5e7eb;
+  border-radius:5px;
+  font-size:10px;
+  color:#475569;
+}
+
+.comment-media-file > span:nth-child(2) {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.comment-media-size {
+  margin-left:auto;
+  color:#94a3b8;
+  white-space:nowrap;
+}
+
+.comment-media-preview {
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  margin-top:7px;
+}
+
+.comment-media-preview-item {
+  width:82px;
+}
+
+.comment-media-preview-item img,
+.comment-media-preview-item video {
+  display:block;
+  width:82px;
+  height:64px;
+  object-fit:cover;
+  border-radius:6px;
+  border:1px solid #d1d5db;
+  background:#111827;
+}
+
+.comment-media-preview-item a {
+  font-size:9px;
+  color:#475569;
+  text-decoration:none;
+}
+
+.comment-media-preview-item a:hover {
+  text-decoration:underline;
+}
+
+@media (max-width:600px) {
+  .comment-media-attach {
+    width:42px;
+    min-width:42px;
+  }
+}
+
+
+
+<style>
+.comment-attachments,
+.client-comment-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.comment-attachment,
+.client-comment-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #d9dee5;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 11px;
+}
+
+.comment-attachment-icon,
+.client-comment-attachment > span:first-child {
+  flex: 0 0 auto;
+}
+
+.comment-attachment-name,
+.client-comment-attachment-name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+}
+
+.comment-attachment-name,
+.client-comment-attachment-name {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.comment-attachment a,
+.client-comment-attachment a {
+  flex: 0 0 auto;
+  color: #475569;
+  text-decoration: none;
+  font-size: 10px;
+}
+
+.comment-attachment a:hover,
+.client-comment-attachment a:hover {
+  text-decoration: underline;
+}
+</style>
+</style>
 </head>
 
 <body>
@@ -1625,188 +1810,3 @@
 
 </body>
 </html>
-
-
-
-/* ===== МЕДИА В КОММЕНТАРИЯХ ===== */
-
-.comment-media-controls {
-  display:flex;
-  align-items:flex-end;
-  gap:7px;
-  flex-shrink:0;
-}
-
-.comment-media-attach {
-  width:40px;
-  min-width:40px;
-  height:38px;
-  padding:0;
-  border:1px solid #d1d5db;
-  border-radius:8px;
-  background:#f8fafc;
-  color:#475569;
-  font-size:18px;
-  line-height:36px;
-  text-align:center;
-  cursor:pointer;
-}
-
-.comment-media-attach:hover {
-  background:#eef2f7;
-}
-
-.comment-media-status {
-  margin-top:6px;
-  font-size:11px;
-  color:#64748b;
-  line-height:1.3;
-}
-
-.comment-media-status.loading {
-  color:#2563eb;
-  font-weight:700;
-}
-
-.comment-media-status.success {
-  color:#15803d;
-  font-weight:700;
-}
-
-.comment-media-status.error {
-  color:#dc2626;
-  font-weight:700;
-}
-
-.comment-media-list {
-  display:flex;
-  flex-direction:column;
-  gap:3px;
-  margin-top:5px;
-}
-
-.comment-media-file {
-  display:flex;
-  align-items:center;
-  gap:5px;
-  min-width:0;
-  padding:3px 6px;
-  background:#f8fafc;
-  border:1px solid #e5e7eb;
-  border-radius:5px;
-  font-size:10px;
-  color:#475569;
-}
-
-.comment-media-file > span:nth-child(2) {
-  min-width:0;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
-
-.comment-media-size {
-  margin-left:auto;
-  color:#94a3b8;
-  white-space:nowrap;
-}
-
-.comment-media-preview {
-  display:flex;
-  flex-wrap:wrap;
-  gap:7px;
-  margin-top:7px;
-}
-
-.comment-media-preview-item {
-  width:82px;
-}
-
-.comment-media-preview-item img,
-.comment-media-preview-item video {
-  display:block;
-  width:82px;
-  height:64px;
-  object-fit:cover;
-  border-radius:6px;
-  border:1px solid #d1d5db;
-  background:#111827;
-}
-
-.comment-media-preview-item a {
-  font-size:9px;
-  color:#475569;
-  text-decoration:none;
-}
-
-.comment-media-preview-item a:hover {
-  text-decoration:underline;
-}
-
-@media (max-width:600px) {
-  .comment-media-attach {
-    width:42px;
-    min-width:42px;
-  }
-}
-
-
-
-<style>
-.comment-attachments,
-.client-comment-attachments {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 7px;
-}
-
-.comment-attachment,
-.client-comment-attachment {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  width: fit-content;
-  max-width: 100%;
-  padding: 5px 8px;
-  border: 1px solid #d9dee5;
-  border-radius: 6px;
-  background: #f8fafc;
-  font-size: 11px;
-}
-
-.comment-attachment-icon,
-.client-comment-attachment > span:first-child {
-  flex: 0 0 auto;
-}
-
-.comment-attachment-name,
-.client-comment-attachment-name {
-  min-width: 0;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #475569;
-}
-
-.comment-attachment-name,
-.client-comment-attachment-name {
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.comment-attachment a,
-.client-comment-attachment a {
-  flex: 0 0 auto;
-  color: #475569;
-  text-decoration: none;
-  font-size: 10px;
-}
-
-.comment-attachment a:hover,
-.client-comment-attachment a:hover {
-  text-decoration: underline;
-}
-</style>

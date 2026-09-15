@@ -81,17 +81,22 @@ class LoginIn(BaseModel):
     password: str
 
 
+class MediaUploadIn(BaseModel):
+    filename: str
+    original_filename: Optional[str] = None
+
+
 class ReportIn(BaseModel):
     address_id: int
     text: str
     task_id: Optional[int] = None
-    media: List[str] = []   # список имён загруженных файлов
+    media: List[MediaUploadIn | str] = []
 
 
 class CrewReportIn(BaseModel):
     address_id: int
     text: str = ""
-    media: List[str] = []   # список имён загруженных файлов
+    media: List[MediaUploadIn | str] = []
 
 
 class TaskIn(BaseModel):
@@ -152,6 +157,29 @@ def login(data: LoginIn):
         "login": row["login"],
         "home": ROLE_HOME[row["role"]],
     }
+
+
+@app.get("/api/login-users")
+def login_users():
+    """
+    Публичный список пользователей для формы входа.
+
+    ВАЖНО:
+    пароль и password_hash никогда не возвращаются.
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT login, role FROM users ORDER BY login"
+        ).fetchall()
+
+    return [
+        {
+            "login": row["login"],
+            "role": row["role"],
+            "role_label": ROLE_LABELS.get(row["role"], row["role"]),
+        }
+        for row in rows
+    ]
 
 
 @app.get("/api/me")
@@ -238,7 +266,11 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
     """Загрузка фото или видео. Проверяет настройки."""
     get_current_user(request)
 
-    ext = Path(file.filename).suffix.lower()
+    original_filename = Path(file.filename or "").name
+    if not original_filename:
+        raise HTTPException(status_code=400, detail="Имя файла не определено")
+
+    ext = Path(original_filename).suffix.lower()
     content = await file.read()
 
     # Определяем тип
@@ -274,6 +306,7 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
 
     return {
         "filename": filename,
+        "original_filename": original_filename,
         "url": f"/uploads/{filename}",
         "media_type": media_type,
     }
@@ -316,20 +349,34 @@ def create_report(data: ReportIn, request: Request):
                     status_code=400,
                     detail=f"Слишком много файлов (макс. {MAX_MEDIA_PER_REPORT})",
                 )
-            for temp_name in data.media:
+            for media_item in data.media:
+                if isinstance(media_item, str):
+                    temp_name = media_item
+                    original_filename = None
+                else:
+                    temp_name = media_item.filename
+                    original_filename = media_item.original_filename
+
                 if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
                     continue
+
                 old_path = UPLOADS_DIR / temp_name
                 if not old_path.exists():
                     continue
+
                 ext = old_path.suffix
                 # Определяем тип по расширению
                 media_type = "video" if ext in VIDEO_EXTENSIONS else "photo"
                 new_name = f"r{report_id}_{uuid.uuid4().hex[:8]}{ext}"
                 old_path.rename(UPLOADS_DIR / new_name)
+
                 conn.execute(
-                    "INSERT INTO media (report_id, filename, media_type) VALUES (?, ?, ?)",
-                    (report_id, new_name, media_type),
+                    """
+                    INSERT INTO media
+                        (report_id, filename, media_type, original_filename)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (report_id, new_name, media_type, original_filename),
                 )
 
         if data.task_id:
@@ -385,7 +432,14 @@ def create_crew_report(data: CrewReportIn, request: Request):
 
         report_id = cursor.lastrowid
 
-        for temp_name in data.media:
+        for media_item in data.media:
+            if isinstance(media_item, str):
+                temp_name = media_item
+                original_filename = None
+            else:
+                temp_name = media_item.filename
+                original_filename = media_item.original_filename
+
             if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
                 continue
 
@@ -410,10 +464,10 @@ def create_crew_report(data: CrewReportIn, request: Request):
             conn.execute(
                 """
                 INSERT INTO crew_monitoring_media
-                    (crew_monitoring_id, filename, media_type)
-                VALUES (?, ?, ?)
+                    (crew_monitoring_id, filename, media_type, original_filename)
+                VALUES (?, ?, ?, ?)
                 """,
-                (report_id, new_name, media_type),
+                (report_id, new_name, media_type, original_filename),
             )
 
     return {
@@ -432,17 +486,19 @@ def list_crew_reports(request: Request):
             SELECT
                 cr.id,
                 cr.address_id,
+                cr.user_id,
                 cr.created_at,
                 cr.text,
+                u.login AS crew_login,
                 a.city,
                 a.address_name,
                 a.manufacturer
             FROM crew_monitorings cr
+            JOIN users u ON u.id = cr.user_id
             JOIN addresses a ON a.id = cr.address_id
-            WHERE cr.user_id = ?
+            WHERE u.role = 'crew'
             ORDER BY cr.created_at DESC, cr.id DESC
             """,
-            (user["sub"],),
         ).fetchall()
 
         result = []
@@ -458,9 +514,42 @@ def list_crew_reports(request: Request):
                 (row["id"],),
             ).fetchall()
 
+            comment_rows = conn.execute(
+                """
+                SELECT
+                    c.id,
+                    c.user_id,
+                    c.text,
+                    c.created_at,
+                    u.login AS author_login,
+                    u.role AS author_role
+                FROM crew_report_comments c
+                JOIN users u ON u.id = c.user_id
+                WHERE c.crew_monitoring_id = ?
+                  AND u.role = 'head'
+                ORDER BY c.created_at ASC, c.id ASC
+                """,
+                (row["id"],),
+            ).fetchall()
+
+            comments = [
+                {
+                    "id": comment["id"],
+                    "user_id": comment["user_id"],
+                    "author_login": comment["author_login"],
+                    "author_role": comment["author_role"],
+                    "text": comment["text"],
+                    "created_at": comment["created_at"],
+                }
+                for comment in comment_rows
+            ]
+
             result.append({
                 "id": row["id"],
                 "address_id": row["address_id"],
+                "user_id": row["user_id"],
+                "crew_login": row["crew_login"],
+                "is_mine": str(row["user_id"]) == str(user["sub"]),
                 "city": row["city"],
                 "address_name": row["address_name"],
                 "manufacturer": row["manufacturer"],
@@ -476,6 +565,8 @@ def list_crew_reports(request: Request):
                     }
                     for media in media_rows
                 ],
+                "comments": comments,
+                "last_head_comment": comments[-1] if comments else None,
             })
 
     return result
@@ -617,7 +708,7 @@ def list_head_report_comments(report_id: int, request: Request):
 
 class HeadReportCommentIn(BaseModel):
     text: str = ""
-    media: List[str] = []
+    media: List[MediaUploadIn | str] = []
 
 
 @app.post("/api/head/reports/{report_id}/comments")
@@ -662,7 +753,14 @@ def create_head_report_comment(
 
         comment_id = cursor.lastrowid
 
-        for temp_name in data.media:
+        for media_item in data.media:
+            if isinstance(media_item, str):
+                temp_name = media_item
+                original_filename = None
+            else:
+                temp_name = media_item.filename
+                original_filename = media_item.original_filename
+
             if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
                 continue
 
@@ -686,10 +784,10 @@ def create_head_report_comment(
             conn.execute(
                 """
                 INSERT INTO crew_report_comment_media
-                    (comment_id, filename, media_type)
-                VALUES (?, ?, ?)
+                    (comment_id, filename, media_type, original_filename)
+                VALUES (?, ?, ?, ?)
                 """,
-                (comment_id, new_name, media_type),
+                (comment_id, new_name, media_type, original_filename),
             )
 
     return {
@@ -757,6 +855,20 @@ def list_reports(
                 "SELECT filename, media_type FROM media WHERE report_id = ? ORDER BY created_at",
                 (report["id"],),
             ).fetchall()
+
+            # Если это ответ на задание, добавляем медиа самого задания.
+            if report["task_id"]:
+                task_media = conn.execute(
+                    """
+                    SELECT filename, media_type
+                    FROM media
+                    WHERE task_id = ? AND report_id IS NULL
+                    ORDER BY created_at
+                    """,
+                    (report["task_id"],),
+                ).fetchall()
+                media = list(task_media) + list(media)
+
             report["media"] = [
                 {"url": f"/uploads/{m['filename']}", "type": m["media_type"]}
                 for m in media
@@ -879,7 +991,16 @@ async def add_task_media(
 
         result = []
 
-        for temp_name in filenames:
+        for media_item in filenames:
+            if isinstance(media_item, str):
+                temp_name = media_item
+                original_filename = None
+            elif isinstance(media_item, dict):
+                temp_name = media_item.get("filename")
+                original_filename = media_item.get("original_filename")
+            else:
+                raise HTTPException(status_code=400, detail="Неверное имя файла")
+
             if not isinstance(temp_name, str) or not temp_name:
                 raise HTTPException(status_code=400, detail="Неверное имя файла")
 
@@ -930,10 +1051,11 @@ async def add_task_media(
 
             conn.execute(
                 """
-                INSERT INTO media (task_id, filename, media_type)
-                VALUES (?, ?, ?)
+                INSERT INTO media
+                    (task_id, filename, media_type, original_filename)
+                VALUES (?, ?, ?, ?)
                 """,
-                (task_id, final_name, media_type)
+                (task_id, final_name, media_type, original_filename)
             )
 
             result.append({
@@ -984,11 +1106,21 @@ def list_tasks(
         for row in rows:
             task = dict(row)
             media = conn.execute(
-                "SELECT filename, media_type FROM media WHERE task_id = ? AND report_id IS NULL",
+                """
+                SELECT filename, media_type, original_filename
+                FROM media
+                WHERE task_id = ? AND report_id IS NULL
+                ORDER BY created_at
+                """,
                 (task["id"],),
             ).fetchall()
+
             task["media"] = [
-                {"url": f"/uploads/{m['filename']}", "type": m["media_type"]}
+                {
+                    "url": f"/uploads/{m['filename']}",
+                    "type": m["media_type"],
+                    "filename": m["original_filename"] or m["filename"],
+                }
                 for m in media
             ]
 
@@ -2060,6 +2192,46 @@ def head_page(request: Request):
     return templates.TemplateResponse("head.html", {"request": request})
 
 
+# =========================================================
+# НОВЫЕ ФУНКЦИОНАЛЬНЫЕ РОЛИ
+# =========================================================
+
+@app.get("/staff", response_class=HTMLResponse)
+def staff_page(request: Request):
+    return templates.TemplateResponse(
+        "role_app.html",
+        {
+            "request": request,
+            "role": "staff",
+            "role_label": "Бригада",
+        },
+    )
+
+
+@app.get("/administrator", response_class=HTMLResponse)
+def administrator_page(request: Request):
+    return templates.TemplateResponse(
+        "role_app.html",
+        {
+            "request": request,
+            "role": "administrator",
+            "role_label": "Администратор",
+        },
+    )
+
+
+@app.get("/curator", response_class=HTMLResponse)
+def curator_page(request: Request):
+    return templates.TemplateResponse(
+        "role_app.html",
+        {
+            "request": request,
+            "role": "curator",
+            "role_label": "Куратор",
+        },
+    )
+
+
 # ========== ЕДИНАЯ ЛЕНТА (МОНИТОРИНГ + ЗАДАНИЯ) ==========
 @app.get("/api/feed")
 def get_unified_feed(request: Request):
@@ -2238,6 +2410,12 @@ def get_unified_feed(request: Request):
                 for h in history_rows
             ]
 
+            item["status_changed_at"] = (
+                history_rows[-1]["changed_at"]
+                if history_rows
+                else None
+            )
+
             # Последнее обычное сообщение.
             if item["messages"]:
                 last_message = item["messages"][-1]
@@ -2373,6 +2551,9 @@ def get_unified_feed(request: Request):
                 "status": "open",
                 "is_important": False,
                 "close_reason": None,
+
+                # Медиа мониторинга — отдельное поле карточки.
+                "media": message["media"],
 
                 # Одна карточка = одна запись мониторинга.
                 "messages": [message],

@@ -1,3 +1,4 @@
+
 const toast = (msg, err = false) => {
   const t = document.getElementById("toast");
   t.textContent = msg;

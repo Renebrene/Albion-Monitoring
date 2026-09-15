@@ -87,6 +87,40 @@ const renderTasks = (tasks) => {
           <div class="city">${t.city}</div>
           <div class="addr">${t.address_name}</div>
           <div class="task-desc">${t.description.replace(/</g,"&lt;")}</div>
+
+          ${
+            Array.isArray(t.media) && t.media.length
+              ? `
+                <div class="chat-media" style="margin:0 0 10px">
+                  ${t.media.map((m, index) => {
+                    const url = String(m.url || "");
+                    const type = String(m.type || "");
+                    const isVideo =
+                      type === "video" ||
+                      /\.(mp4|mov|webm|m4v)$/i.test(url);
+
+                    return isVideo
+                      ? `
+                        <video
+                          src="${url}"
+                          controls
+                          preload="metadata"
+                          title="Вложение ${index + 1}"
+                        ></video>
+                      `
+                      : `
+                        <img
+                          src="${url}"
+                          alt="Вложение ${index + 1}"
+                          onclick="window.open('${url}', '_blank')"
+                        >
+                      `;
+                  }).join("")}
+                </div>
+              `
+              : ""
+          }
+
           ${closeReasonHtml}
           <div style="font-size:12px;color:var(--muted);margin:8px 0">📅 ${fmtDate(t.created_at)} · 👤 ${t.author}</div>
           ${adminActions}

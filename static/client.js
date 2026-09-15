@@ -347,6 +347,22 @@ const renderFeed = (items) => {
       ? `<span class="client-media-indicator" title="Прикреплено файлов: ${taskMediaCount}">📎 ${taskMediaCount}</span>`
       : "";
 
+    // Исходные фото/видео обычного мониторинга.
+    // В /api/feed они находятся внутри первого сообщения мониторинга.
+    const monitoringMedia =
+      !isTask &&
+      Array.isArray(item.messages) &&
+      item.messages.length &&
+      Array.isArray(item.messages[0].media)
+        ? item.messages[0].media
+        : [];
+
+    const monitoringMediaCount = monitoringMedia.length;
+
+    const monitoringMediaIndicator = !isTask && monitoringMediaCount
+      ? `<span class="client-media-indicator" title="Прикреплено файлов: ${monitoringMediaCount}">📎 ${monitoringMediaCount}</span>`
+      : "";
+
     let adminActions = "";
 
     if(isTask) {
@@ -497,6 +513,7 @@ const renderFeed = (items) => {
                 : ""}
 
               ${taskMediaIndicator}
+              ${monitoringMediaIndicator}
               ${importantIcon}
             </div>
           </div>
@@ -537,15 +554,122 @@ const renderFeed = (items) => {
 
       <div class="feed-details" onclick="event.stopPropagation()">
 
-        <div class="city">${item.city} · ${item.address_name}</div>
-
         <div class="full-text">
           ${sourceText.replace(/</g,"&lt;").replace(/\n/g,"<br>")}
         </div>
 
+        ${isTask && taskMediaCount
+          ? `
+            <div class="client-task-attachments">
+              <div class="client-task-attachments-title">Прикреплённые фото и видео</div>
+              <div class="client-task-attachments-list">
+                ${taskMedia.map((media, index) => {
+                  const url = String(media.url || "");
+                  const type = String(media.type || media.media_type || "");
+
+                  const isVideo =
+                    type === "video" ||
+                    /\\.(mp4|mov|webm|m4v)$/i.test(url);
+
+                  return isVideo
+                    ? `
+                      <video
+                        src="${url}"
+                        controls
+                        preload="metadata"
+                        title="Вложение ${index + 1}"
+                      ></video>
+                    `
+                    : `
+                      <img
+                        src="${url}"
+                        alt="Вложение ${index + 1}"
+                        onclick="window.open('${url}', '_blank')"
+                      >
+                    `;
+                }).join("")}
+              </div>
+            </div>
+          `
+          : ""}
+
         ${isTask && item.close_reason
           ? `<div class="close-reason">📌 ${item.close_reason.replace(/</g,"&lt;")}</div>`
           : ''}
+
+        ${!isTask && monitoringMediaCount
+          ? `<div class="client-comment-attachments" style="margin-top:14px">
+              ${monitoringMedia.map(media => {
+                let name = "";
+                let url = "";
+                let mediaType = "";
+
+                if (media && typeof media === "object") {
+                  url = String(media.url || "");
+                  mediaType = String(media.type || media.media_type || "");
+
+                  if (url) {
+                    name = url.split("/").pop() || "Файл";
+                  }
+                } else {
+                  name = String(media || "");
+
+                  url = name.startsWith("/uploads/")
+                    ? name
+                    : `/uploads/${encodeURIComponent(name)}`;
+                }
+
+                if (!url) {
+                  return "";
+                }
+
+                const isImage =
+                  mediaType === "photo" ||
+                  /\.(jpg|jpeg|png|webp|gif)$/i.test(name);
+
+                const isVideo =
+                  mediaType === "video" ||
+                  /\.(mp4|mov|webm|m4v)$/i.test(name);
+
+                if (isImage) {
+                  return `
+                    <div class="client-comment-attachment client-comment-image-attachment">
+                      <a
+                        href="${url}"
+                        target="_blank"
+                        rel="noopener"
+                        title="Открыть фотографию"
+                      >
+                        <img
+                          src="${url}"
+                          class="client-comment-image"
+                          alt="Фото"
+                          loading="lazy"
+                        >
+                      </a>
+                      <a href="${url}" download>Скачать</a>
+                    </div>
+                  `;
+                }
+
+                return `
+                  <div class="client-comment-attachment">
+                    <span>${isVideo ? "🎬" : "📎"}</span>
+                    <a
+                      class="client-comment-attachment-name"
+                      href="${url}"
+                      target="_blank"
+                      rel="noopener"
+                      title="Открыть файл"
+                    >
+                      ${name.replace(/</g, "&lt;")}
+                    </a>
+                    <a href="${url}" download>Скачать</a>
+                  </div>
+                `;
+              }).join("")}
+            </div>`
+          : ""}
 
         ${adminActions}
 
@@ -1246,6 +1370,32 @@ window.createTask = async () => {
 };
 
 // Создание мониторинга (Сервис, но можно расширить)
+const monMediaInput = document.getElementById("monMedia");
+
+if(monMediaInput) {
+  monMediaInput.addEventListener("change", () => {
+    const status = document.getElementById("monMediaStatus");
+    const files = Array.from(monMediaInput.files || []);
+
+    if(!status) return;
+
+    if(!files.length) {
+      status.textContent = "Файлы не выбраны";
+      status.className = "client-chat-media-status";
+      return;
+    }
+
+    if(files.length > 10) {
+      status.textContent = `Выбрано ${files.length} файлов — максимум 10`;
+      status.className = "client-chat-media-status error";
+      return;
+    }
+
+    status.textContent = `✓ Выбрано файлов: ${files.length}`;
+    status.className = "client-chat-media-status success";
+  });
+}
+
 document.getElementById("monitoringBtn").onclick = async () => {
   document.getElementById("monitoringModal").classList.add("active");
 

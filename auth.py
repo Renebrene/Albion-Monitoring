@@ -51,19 +51,49 @@ def get_current_user(request: Request) -> dict:
     return decode_token(auth[len("Bearer "):])
 
 
+# Базовый функциональный профиль новых ролей.
+#
+# Важно: role пользователя остаётся настоящей ролью:
+# staff / administrator / curator.
+# base_role используется только для определения унаследованных
+# возможностей существующих service / admin / director.
+ROLE_BASE_ROLE = {
+    "staff": "service",
+    "administrator": "admin",
+    "curator": "director",
+}
+
+
+def get_base_role(role: str) -> str:
+    """Возвращает базовый функциональный профиль роли."""
+    return ROLE_BASE_ROLE.get(role, role)
+
+
 def require_role(request: Request, role: str) -> dict:
-    """Проверяет, что у пользователя нужная роль (или admin)"""
+    """Проверяет роль с учётом базового профиля новых ролей."""
     user = get_current_user(request)
-    if user["role"] != role and user["role"] != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
+    base_role = get_base_role(user["role"])
+
+    if base_role != role and base_role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён",
+        )
     return user
 
 
 def require_any(request: Request, roles: list) -> dict:
-    """Проверяет, что у пользователя одна из разрешённых ролей"""
+    """Проверяет разрешённые роли с учётом базового профиля."""
     user = get_current_user(request)
-    if user["role"] not in roles:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
+    base_role = get_base_role(user["role"])
+
+    allowed_base_roles = {get_base_role(role) for role in roles}
+
+    if base_role not in allowed_base_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён",
+        )
     return user
 
 
@@ -74,6 +104,10 @@ ROLE_LABELS = {
     "director": "Директор",
     "crew": "Экипаж",
     "head": "Руководитель",
+
+    "staff": "Бригада",
+    "administrator": "Администратор",
+    "curator": "Куратор",
 }
 
 # На какую страницу попадает каждая роль после входа
@@ -83,5 +117,9 @@ ROLE_HOME = {
     "director": "/director",
     "crew": "/crew",
     "head": "/head",
+
+    "staff": "/staff",
+    "administrator": "/administrator",
+    "curator": "/curator",
 }
 

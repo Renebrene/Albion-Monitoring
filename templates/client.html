@@ -857,13 +857,22 @@
     <textarea id="monText" placeholder="Опишите состояние экрана, повреждения..." style="min-height:100px;margin-bottom:16px;width:100%"></textarea>
 
     <label>Фото / видео</label>
-    <input
-      id="monMedia"
-      type="file"
-      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
-      multiple
-      style="margin-bottom:6px"
-    >
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <input
+        id="monMedia"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+        multiple
+        style="display:none"
+      >
+      <button
+        type="button"
+        class="btn chat-attach-btn"
+        onclick="document.getElementById('monMedia').click()"
+        title="Прикрепить фото или видео"
+      >📎</button>
+      <span id="monMediaStatus" class="client-chat-media-status">Файлы не выбраны</span>
+    </div>
     <div id="monMediaHint" style="font-size:12px;color:var(--muted);margin-bottom:16px">
       Можно прикрепить до 10 файлов
     </div>
@@ -2081,6 +2090,45 @@
   max-height: 180px;
   border-radius: 7px;
   object-fit: contain;
+  cursor: zoom-in;
+}
+</style>
+
+<style>
+.client-task-attachments {
+  margin-top: 14px;
+  padding: 9px 10px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.client-task-attachments-title {
+  margin-bottom: 7px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.client-task-attachments-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.client-task-attachments-list img,
+.client-task-attachments-list video {
+  display: block;
+  height: 72px;
+  width: auto;
+  max-width: 180px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #111827;
+}
+
+.client-task-attachments-list img {
   cursor: zoom-in;
 }
 </style>

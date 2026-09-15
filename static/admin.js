@@ -4,6 +4,81 @@ const authHeaders = () => ({
 });
 
 
+function renderMonitoringMedia(media) {
+  if(!Array.isArray(media) || !media.length) return "";
+
+  return `
+    <div class="client-comment-attachments" style="margin-top:8px">
+      ${media.map(m => {
+        let url = "";
+        let name = "";
+        let mediaType = "";
+
+        if(m && typeof m === "object") {
+          url = String(m.url || "");
+          mediaType = String(m.type || m.media_type || "");
+
+          if(url) {
+            name = url.split("/").pop() || "Файл";
+          }
+        } else {
+          name = String(m || "");
+          url = name.startsWith("/uploads/")
+            ? name
+            : `/uploads/${encodeURIComponent(name)}`;
+        }
+
+        if(!url) return "";
+
+        const isImage =
+          mediaType === "photo" ||
+          /\.(jpg|jpeg|png|webp|gif)$/i.test(name);
+
+        const isVideo =
+          mediaType === "video" ||
+          /\.(mp4|mov|webm|m4v)$/i.test(name);
+
+        if(isImage) {
+          return `
+            <div class="client-comment-attachment client-comment-image-attachment">
+              <a
+                href="${url}"
+                target="_blank"
+                rel="noopener"
+                title="Открыть фотографию"
+              >
+                <img
+                  src="${url}"
+                  class="client-comment-image"
+                  alt="Фото"
+                  loading="lazy"
+                >
+              </a>
+              <a href="${url}" download>Скачать</a>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="client-comment-attachment">
+            <span>${isVideo ? "🎬" : "📎"}</span>
+            <a
+              class="client-comment-attachment-name"
+              href="${url}"
+              target="_blank"
+              rel="noopener"
+              title="Открыть файл"
+            >
+              ${name.replace(/</g, "&lt;")}
+            </a>
+            <a href="${url}" download>Скачать</a>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
 function renderDirectorCommentMedia(media) {
   if(!Array.isArray(media) || !media.length) return "";
 
@@ -368,6 +443,24 @@ const renderFeed = items => {
 
     const messages = item.messages || [];
 
+    // Медиа самого задания хранится в item.media.
+    // Для мониторинга медиа находится внутри messages[].media.
+    const itemMedia = isTask
+      ? (Array.isArray(item.media) ? item.media : [])
+      : messages.flatMap(m => Array.isArray(m.media) ? m.media : []);
+
+    const mediaCount = itemMedia.length;
+
+    const mediaIcon = mediaCount
+      ? `
+        <span
+          class="director-media-indicator"
+          title="Прикреплено файлов: ${mediaCount}"
+          onclick="event.stopPropagation()"
+        >📎 ${mediaCount}</span>
+      `
+      : "";
+
     let lastMsgHtml = '<span class="director-last-message-empty">Сообщений нет</span>';
 
     if(item.last_message_at) {
@@ -458,6 +551,7 @@ const renderFeed = items => {
 
           <div class="chat-bubble">
             ${esc(String(m.text || "")).replace(/\n/g, "<br>")}
+            ${renderMonitoringMedia(m.media)}
             <div class="chat-time">${esc(fmtDate(m.created_at))}</div>
           </div>
         </div>
@@ -572,6 +666,7 @@ const renderFeed = items => {
           </div>
 
           <div class="right">
+            ${mediaIcon}
             <span class="expand-arrow">⌄</span>
           </div>
 
@@ -582,6 +677,47 @@ const renderFeed = items => {
           ${isTask
             ? `<div class="task-description">${esc(item.text || "").replace(/\n/g, "<br>")}</div>`
             : ''}
+
+          ${mediaCount
+            ? `
+              <div class="feed-media-block">
+                <div class="feed-media-title">Прикреплённые фото и видео</div>
+
+                <div class="feed-media-list">
+                  ${itemMedia.map((m, index) => {
+                    const url = String(m.url || "");
+                    const type = String(m.type || "");
+                    const isVideo =
+                      type === "video" ||
+                      /\.(mp4|mov|webm|m4v)$/i.test(url);
+
+                    return `
+                      <div class="feed-media-item">
+                        ${
+                          isVideo
+                            ? `
+                              <video
+                                src="${esc(url)}"
+                                controls
+                                preload="metadata"
+                              ></video>
+                            `
+                            : `
+                              <img
+                                src="${esc(url)}"
+                                alt="Вложение ${index + 1}"
+                                onclick="event.stopPropagation(); window.open('${esc(url)}', '_blank')"
+                              >
+                            `
+                        }
+                      </div>
+                    `;
+                  }).join("")}
+                </div>
+              </div>
+            `
+            : ''
+          }
 
           <div class="chat">
             ${chatHtml}

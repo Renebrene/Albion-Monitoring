@@ -455,6 +455,11 @@ const renderReports = reports => {
     const text =
       String(report.text || "").trim();
 
+    const mediaCount =
+      Array.isArray(report.media)
+        ? report.media.length
+        : 0;
+
     return `
       <article class="report-card">
 
@@ -464,6 +469,18 @@ const renderReports = reports => {
           data-report-toggle="${report.id}"
         >
           <div class="report-summary-main">
+            <div class="report-number">
+              Мониторинг №${report.id}
+              ${mediaCount ? `
+                <span
+                  class="crew-media-indicator"
+                  title="Прикреплено файлов: ${mediaCount}"
+                >
+                  📎 ${mediaCount}
+                </span>
+              ` : ""}
+            </div>
+
             <div class="report-address">
               ${esc(address)}
             </div>

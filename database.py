@@ -157,6 +157,25 @@ def init_schema():
             CREATE INDEX IF NOT EXISTS idx_addresses_manufacturer ON addresses(manufacturer);
         """)
 
+        # Исходные имена загруженных файлов.
+        # Старые записи остаются без имени, новые получают его при загрузке.
+        for table in (
+            "media",
+            "crew_monitoring_media",
+            "crew_report_comment_media",
+        ):
+            columns = {
+                row["name"]
+                for row in conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if "original_filename" not in columns:
+                conn.execute(
+                    f"ALTER TABLE {table} "
+                    "ADD COLUMN original_filename TEXT"
+                )
+
         # Медиа в комментариях директора/админа.
         # Таблица director_comments могла быть создана предыдущей
         # версией приложения, поэтому мигрируем безопасно.

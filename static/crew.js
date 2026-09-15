@@ -484,6 +484,65 @@ const renderCrewHistory = reports => {
 
     const mediaHtml = renderReportMedia(report.media);
 
+    const mediaCount =
+      Array.isArray(report.media)
+        ? report.media.length
+        : 0;
+
+    const lastHeadComment =
+      report.last_head_comment &&
+      typeof report.last_head_comment === "object"
+        ? report.last_head_comment
+        : null;
+
+    const lastHeadCommentText =
+      lastHeadComment &&
+      String(lastHeadComment.text || "").trim()
+        ? String(lastHeadComment.text || "")
+            .replace(/\n/g, " ")
+            .trim()
+            .substring(0, 140)
+        : "...";
+
+    const headComments =
+      Array.isArray(report.comments)
+        ? report.comments
+        : [];
+
+    const headCommentsHtml =
+      headComments.length
+        ? `
+          <div class="crew-head-comments">
+            <div class="crew-head-comments-title">
+              Комментарии Директора
+            </div>
+
+            ${headComments.map(comment => {
+              const commentText =
+                String(comment.text || "")
+                  .replace(/\n/g, " ")
+                  .trim();
+
+              return `
+                <div class="crew-head-comment">
+                  <div class="crew-head-comment-meta">
+                    <b><i>Директор</i></b>
+                    ${comment.created_at ? `
+                      <b><i>(${esc(comment.created_at)})</i></b>
+                    ` : ""}
+                    <b>:</b>
+                  </div>
+
+                  <div class="crew-head-comment-text">
+                    <i>"${esc(commentText || "...")}"</i>
+                  </div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `
+        : "";
+
     const content =
       text || mediaHtml
         ? `
@@ -511,6 +570,19 @@ const renderCrewHistory = reports => {
           <div class="report-summary-main">
             <div class="report-number">
               № ${esc(String(report.id))}
+              ${report.crew_login ? `
+                <span class="${report.is_mine ? "crew-name-own" : "crew-name-other"}">
+                  (${esc(report.crew_login)})
+                </span>
+              ` : ""}
+              ${mediaCount ? `
+                <span
+                  class="crew-media-indicator"
+                  title="Прикреплено файлов: ${mediaCount}"
+                >
+                  📎 ${mediaCount}
+                </span>
+              ` : ""}
             </div>
 
             <div class="report-address">
@@ -527,11 +599,26 @@ const renderCrewHistory = reports => {
           </div>
         </button>
 
+        ${lastHeadComment ? `
+          <div class="crew-head-comment-preview">
+            <span>
+              <b><i>Директор</i></b>
+              ${lastHeadComment.created_at ? `
+                <b><i>(${esc(lastHeadComment.created_at)})</i></b>
+              ` : ""}
+              <b>:</b>
+              <i>"${esc(lastHeadCommentText)}"</i>
+            </span>
+          </div>
+        ` : ""}
+
         <div
           class="report-details"
           id="report-details-${report.id}"
         >
           ${content}
+
+          ${headCommentsHtml}
         </div>
 
       </article>

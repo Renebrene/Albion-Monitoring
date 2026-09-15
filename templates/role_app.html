@@ -1,0 +1,1726 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1">
+    <title>АЛЬБИОН. Мониторинг экранов</title>
+
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .role-app {
+            min-height: 100vh;
+        }
+
+        .role-app-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 18px;
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .role-app-title {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .role-app-role {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .role-app-main {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+
+        .role-diagnostic-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+            padding: 10px 12px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .role-diagnostic-header strong {
+            color: var(--ink);
+            margin-right: 8px;
+        }
+
+        .role-diagnostic-card {
+            margin-bottom: 8px;
+            padding: 12px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+        }
+
+        .role-diagnostic-type {
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .role-diagnostic-address {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .role-diagnostic-text {
+            margin-top: 6px;
+            font-size: 13px;
+        }
+
+        .role-diagnostic-meta {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .role-diagnostic-error {
+            padding: 14px;
+            background: #fff;
+            border: 1px solid var(--err);
+            border-radius: 8px;
+            color: var(--err);
+        }
+
+        .role-card {
+            margin-bottom: 8px;
+            padding: 12px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+        }
+
+        .role-card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .role-card-type {
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .02em;
+        }
+
+        .role-card-status {
+            padding: 3px 7px;
+            border-radius: 5px;
+            background: #f1f5f9;
+            color: #475569;
+            font-size: 10px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .role-card-address {
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.3;
+        }
+
+        .role-card-manufacturer {
+            margin-top: 3px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .role-card-text {
+            margin-top: 8px;
+            font-size: 13px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .role-card-meta {
+            margin-top: 9px;
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.35;
+        }
+
+        .role-empty {
+            padding: 20px 12px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            color: var(--muted);
+            font-size: 12px;
+            text-align: center;
+        }
+
+        @media (max-width: 600px) {
+            .role-app-header {
+                padding: 12px;
+            }
+
+            .role-app-title {
+                font-size: 14px;
+            }
+
+            .role-app-main {
+                width: auto;
+                margin: 0;
+                padding: 8px;
+            }
+
+            .role-card {
+                padding: 10px;
+            }
+        }
+
+        /* =========================================================
+           НОВАЯ ROLE APP — ВИЗУАЛ КАРТОЧЕК КАК В /client
+           ========================================================= */
+
+        .feed-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .feed-item {
+            background: var(--card);
+            border: 2px solid #cbd5e1;
+            border-radius: 12px;
+            overflow: hidden;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .feed-item:hover {
+            border-color: #94a3b8;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        .feed-item.expanded {
+            border-color: var(--primary);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+        }
+
+        .feed-item.new-admin {
+            border-left: 4px solid #f97316;
+        }
+
+        .feed-item.new-director {
+            border-left: 4px solid #dc2626;
+        }
+
+        .feed-item.new-monitoring {
+            border-left: 4px solid #16a34a;
+        }
+
+        .feed-summary {
+            padding: 14px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+        }
+
+        .feed-summary .left {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .top-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-height: 17px;
+        }
+
+        .top-row-main {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            flex-wrap: nowrap;
+        }
+
+        .top-row-status {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 6px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+
+        .type-badge {
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            padding: 4px 9px !important;
+            border-radius: 6px !important;
+            color: #fff !important;
+            font-size: 11px !important;
+            font-weight: 800 !important;
+            line-height: 1 !important;
+            letter-spacing: .3px;
+        }
+
+        .type-badge.type-monitoring {
+            background: #10b981 !important;
+        }
+
+        .type-badge.type-task {
+            background: #f97316 !important;
+        }
+
+        /* Задания, созданные директором */
+        .type-badge.type-task-director {
+            background: #dc2626 !important;
+            color: #fff !important;
+        }
+
+        /* Вся карточка задания директора */
+        .feed-item:has(.type-task-director) {
+            border-left: 4px solid #dc2626;
+        }
+
+        .feed-item:has(.type-task-director).expanded {
+            border-color: #dc2626;
+            box-shadow: 0 8px 20px rgba(220, 38, 38, .12);
+        }
+
+        /* Комментарии директора */
+        .role-director-comments {
+            margin-top: 14px;
+            padding: 10px;
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            border-radius: 8px;
+        }
+
+        .role-director-comments-title {
+            margin-bottom: 8px;
+            color: #9a3412;
+            font-size: 11px;
+            font-weight: 800;
+        }
+
+        .role-director-comment {
+            padding: 8px 0;
+            border-top: 1px solid #fed7aa;
+        }
+
+        .role-director-comment:first-of-type {
+            border-top: 0;
+            padding-top: 0;
+        }
+
+        .role-director-comment-meta {
+            color: #9a3412;
+            font-size: 10px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .role-director-comment-text {
+            color: var(--ink);
+            font-size: 13px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+        }
+
+        .role-director-comment-media {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 7px;
+        }
+
+        .role-director-comment-media img,
+        .role-director-comment-media video {
+            display: block;
+            width: auto;
+            height: 72px;
+            max-width: 180px;
+            object-fit: contain;
+            border: 1px solid #fed7aa;
+            border-radius: 6px;
+            background: #111827;
+        }
+
+        .role-director-comment-media img {
+            cursor: zoom-in;
+        }
+
+        .top-row .type-badge {
+            height: 17px;
+            min-height: 17px;
+            padding: 0 6px !important;
+            border-radius: 5px !important;
+            font-size: 10px !important;
+            font-weight: 800 !important;
+            line-height: 17px !important;
+            letter-spacing: .2px;
+        }
+
+        .top-row .feed-number {
+            font-size: 10px;
+            line-height: 17px;
+            font-weight: 700;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .top-row .feed-created {
+            font-size: 12px;
+            line-height: 17px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .top-row .important-star {
+            font-size: 16px;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 17px;
+        }
+
+        .status-badge {
+            font-size: 10px;
+            line-height: 17px;
+            padding: 0 6px;
+            border-radius: 5px;
+            white-space: nowrap;
+            font-weight: 700;
+        }
+
+        .status-badge.status-open-admin {
+            color: #c2410c;
+            background: transparent;
+            border: 1px solid #f97316;
+        }
+
+        .status-badge.status-open-director {
+            color: #dc2626;
+            background: transparent;
+            border: 1px solid #dc2626;
+        }
+
+        .status-badge.status-done {
+            color: #6b7280;
+            background: transparent;
+            border: 1px solid #9ca3af;
+        }
+
+        .status-badge.status-review {
+            color: #2563eb;
+            background: transparent;
+            border: 1px solid #2563eb;
+            font-weight: 800;
+        }
+
+        .status-badge.status-rework-admin {
+            color: #c2410c;
+            background: transparent;
+            border: 1px solid #f97316;
+            font-weight: 800;
+        }
+
+        .status-badge.status-rework-director {
+            color: #dc2626;
+            background: transparent;
+            border: 1px solid #dc2626;
+            font-weight: 800;
+        }
+
+        .status-badge.status-overdue {
+            color: #dc2626;
+            background: transparent;
+            border: 0;
+            padding-left: 0;
+            padding-right: 0;
+            font-weight: 900;
+            letter-spacing: 1px;
+        }
+
+        .feed-summary .bottom-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .feed-summary .addr-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .closed-short-desc {
+            font-weight: 700;
+            font-style: italic;
+            color: #111;
+        }
+
+        .closed-director-comment {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.35;
+        }
+
+        .director-mark {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 5px;
+            font-size: 15px;
+            line-height: 1;
+            vertical-align: middle;
+        }
+
+        .feed-details {
+            display: none;
+            padding: 0 16px 16px;
+            border-top: 1px solid var(--border);
+            padding-top: 16px;
+            background: #fafbfc;
+        }
+
+        .feed-item.expanded .feed-details {
+            display: block;
+        }
+
+        .feed-details .full-text {
+            font-size: 14px;
+            line-height: 1.5;
+            padding: 12px;
+            background: #fff;
+            border-left: 3px solid var(--primary);
+            border-radius: 6px;
+            white-space: pre-wrap;
+            margin-bottom: 12px;
+        }
+
+        .close-reason {
+            display: inline-block;
+            margin-bottom: 12px;
+            padding: 4px 10px;
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .client-media-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            color: #6b7280;
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .client-task-attachments {
+            margin-top: 14px;
+            padding: 9px 10px;
+            background: #f8fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+        }
+
+        .client-task-attachments-title {
+            margin-bottom: 7px;
+            color: #64748b;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .client-task-attachments-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .client-task-attachments-list img,
+        .client-task-attachments-list video {
+            display: block;
+            height: 72px;
+            width: auto;
+            max-width: 180px;
+            object-fit: contain;
+            border-radius: 6px;
+            border: 1px solid #d1d5db;
+            background: #111827;
+        }
+
+        .client-task-attachments-list img {
+            cursor: zoom-in;
+        }
+
+        .client-comment-attachments {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-top: 7px;
+        }
+
+        .client-comment-attachment {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            width: fit-content;
+            max-width: 100%;
+            padding: 5px 8px;
+            border: 1px solid #d9dee5;
+            border-radius: 6px;
+            background: #f8fafc;
+            font-size: 11px;
+        }
+
+        .client-comment-attachment-name {
+            min-width: 0;
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #475569;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .client-comment-attachment a {
+            flex: 0 0 auto;
+            color: #475569;
+            text-decoration: none;
+            font-size: 10px;
+        }
+
+        .client-comment-image-attachment {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+        }
+
+        .client-comment-image {
+            display: block;
+            width: auto;
+            max-width: min(180px, 100%);
+            max-height: 180px;
+            border-radius: 7px;
+            object-fit: contain;
+            cursor: zoom-in;
+        }
+
+        .chat-box {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .chat-msg {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            padding-left: 8px;
+            margin-bottom: 10px;
+        }
+
+        .chat-msg.service {
+            padding-left: 8px;
+        }
+
+        .chat-msg.admin {
+            padding-left: 16px;
+        }
+
+        .chat-msg.service .chat-bubble {
+            border-left: 3px solid #16a34a;
+            background: #f3f4f6;
+            color: var(--ink);
+        }
+
+        .chat-msg.admin .chat-bubble {
+            border-left: 3px solid #f97316;
+            background: #e5e7eb;
+            color: var(--ink);
+        }
+
+        .chat-bubble {
+            max-width: 80%;
+            border-radius: 9px;
+            padding: 7px 9px;
+            font-size: 13px;
+            line-height: 1.35;
+        }
+
+        .chat-author {
+            color: #6b7280;
+            font-size: 10px;
+            margin-bottom: 2px;
+        }
+
+        .chat-time {
+            font-size: 10px;
+            opacity: .7;
+            margin-top: 4px;
+            text-align: right;
+        }
+
+        .task-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 12px;
+        }
+
+        .client-ready-btn {
+            width: 28px;
+            height: 24px;
+            min-width: 28px;
+            padding: 0;
+            margin: 0;
+            border: 1px solid #10b981;
+            border-radius: 5px;
+            background: #10b981;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 800;
+            line-height: 22px;
+            cursor: pointer;
+        }
+
+        @media (max-width: 700px) {
+            .type-badge {
+                padding: 3px 7px !important;
+                font-size: 9px !important;
+            }
+
+            .feed-summary {
+                padding: 12px;
+            }
+
+            .top-row {
+                gap: 5px;
+            }
+
+            .top-row-status {
+                gap: 4px;
+            }
+
+            .top-row .feed-created {
+                font-size: 11px;
+            }
+
+            .top-row .feed-number {
+                font-size: 10px;
+            }
+
+            .client-task-attachments-list img,
+            .client-task-attachments-list video {
+                max-width: min(180px, 100%);
+            }
+        }
+
+
+        .role-app-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .add-monitoring-btn {
+            border: 0;
+            border-radius: 7px;
+            padding: 8px 12px;
+            background: #10b981;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 800;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .add-monitoring-btn:hover {
+            background: #059669;
+        }
+
+        .monitoring-form {
+            margin-bottom: 16px;
+            padding: 14px;
+            background: #fff;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.06);
+        }
+
+        .monitoring-form-title {
+            margin-bottom: 12px;
+            font-size: 15px;
+            font-weight: 800;
+        }
+
+        .monitoring-form-field {
+            margin-bottom: 12px;
+        }
+
+        .monitoring-form-field label {
+            display: block;
+            margin-bottom: 5px;
+            color: #475569;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .monitoring-form-field select,
+        .monitoring-form-field textarea,
+        .monitoring-form-field input[type="file"] {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .monitoring-form-field select,
+        .monitoring-form-field textarea {
+            padding: 9px 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            background: #fff;
+            color: var(--ink);
+            font: inherit;
+            font-size: 13px;
+        }
+
+        .monitoring-form-field textarea {
+            resize: vertical;
+            min-height: 90px;
+        }
+
+        .monitoring-media-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .monitoring-media-preview {
+            width: 72px;
+            height: 72px;
+            object-fit: cover;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #111827;
+        }
+
+        .monitoring-form-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 7px;
+            margin-top: 14px;
+        }
+
+        .monitoring-cancel-btn,
+        .monitoring-submit-btn {
+            border: 0;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 12px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .monitoring-cancel-btn {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .monitoring-submit-btn {
+            background: #10b981;
+            color: #fff;
+        }
+
+        .task-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.task-action-btn {
+    border: 0;
+    border-radius: 7px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.task-action-complete {
+    background: #16a34a;
+    color: #fff;
+}
+
+.task-action-complete:hover {
+    background: #15803d;
+}
+
+.monitoring-form-error {
+            margin-top: 10px;
+            padding: 8px 10px;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            background: #fef2f2;
+            color: #b91c1c;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        @media (max-width: 700px) {
+            .role-app-header-actions {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 6px;
+            }
+
+            .add-monitoring-btn {
+                width: 100%;
+            }
+        }
+
+    
+/* ===== SERVICE TOOLBAR / FILTERS / STATISTICS ===== */
+
+/* =========================================================
+   НОВАЯ ВЕРХНЯЯ ПАНЕЛЬ ФИЛЬТРОВ И СТАТИСТИКИ
+   ========================================================= */
+
+.feed-toolbar {
+  width: 100%;
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.toolbar-column {
+  min-width: 0;
+}
+
+.toolbar-buttons {
+  display: block;
+  margin: 0;
+}
+
+.toolbar-toggle {
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toolbar-toggle:hover {
+  border-color: var(--primary);
+}
+
+.toolbar-toggle.open {
+  background: #f5f7fa;
+}
+
+.toolbar-arrow {
+  font-size: 11px;
+  transition: transform .15s ease;
+}
+
+.toolbar-toggle.open .toolbar-arrow {
+  transform: rotate(180deg);
+}
+
+.filters-panel,
+.stats-panel {
+  width: 100%;
+  display: none;
+  padding: 10px;
+  margin-top: 8px;
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.filters-panel.open,
+.stats-panel.open {
+  display: block;
+}
+
+.filter-block + .filter-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.filter-block-title {
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.type-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.type-filter {
+  flex: 1;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.type-filter.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.type-filter.monitoring-filter.active {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+.type-filter.task-filter.active {
+  background: #f97316;
+  border-color: #f97316;
+}
+
+.state-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.state-filter {
+  width: 58px;
+  height: 48px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.state-filter span {
+  font-size: 18px;
+  line-height: 19px;
+}
+
+.state-filter small {
+  font-size: 8px;
+  line-height: 10px;
+  font-weight: 700;
+}
+
+.state-filter.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.sort-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.sort-filter {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.sort-filter.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.sort-direction {
+  font-size: 14px;
+  font-weight: 900;
+  margin-left: 3px;
+}
+
+.stats-section + .stats-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.stats-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stats-grid {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  flex: 1;
+  min-width: 70px;
+  padding: 7px 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: center;
+}
+
+.stat-item strong {
+  display: block;
+  font-size: 17px;
+  line-height: 19px;
+}
+
+.stat-item span {
+  display: block;
+  margin-top: 2px;
+  font-size: 8px;
+  color: var(--muted);
+}
+
+@media (min-width: 701px) {
+
+  .filters-panel,
+  .stats-panel {
+    margin-bottom: 0;
+  }
+
+  .filters-panel.open,
+  .stats-panel.open {
+    display: block;
+  }
+}
+
+@media (max-width: 700px) {
+  .toolbar-buttons {
+    gap: 5px;
+  }
+
+  .toolbar-toggle {
+    height: 38px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
+  .filters-panel,
+  .stats-panel {
+    padding: 7px;
+  }
+
+  .type-filters {
+    gap: 4px;
+  }
+
+  .type-filter {
+    height: 34px;
+    font-size: 9px;
+    padding: 0 3px;
+  }
+
+  .state-filters {
+    justify-content: space-between;
+    gap: 3px;
+  }
+
+  .state-filter {
+    flex: 1;
+    width: auto;
+    height: 43px;
+  }
+
+  .state-filter span {
+    font-size: 16px;
+    line-height: 17px;
+  }
+
+  .state-filter small {
+    font-size: 7px;
+  }
+
+  .sort-filters {
+    gap: 4px;
+  }
+
+  .sort-filter {
+    height: 34px;
+    padding: 0 3px;
+    font-size: 8px;
+  }
+
+  .sort-direction {
+    font-size: 12px;
+  }
+
+  .stat-item {
+    min-width: 60px;
+  }
+}
+
+
+
+/* ==========================================================
+   CLIENT FILTERS V2
+   ========================================================== */
+
+.filters-panel {
+  width: 100%;
+}
+
+.filters-panel .filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.filters-panel .filter-block {
+  min-width: 0;
+}
+
+.filters-panel .filter-block + .filter-block {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.filters-panel .filter-row .filter-block + .filter-block {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.filters-panel .filter-block-title {
+  margin-bottom: 7px;
+}
+
+.filters-panel .type-filters,
+.filters-panel .sort-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.filters-panel .type-filter,
+.filters-panel .sort-filter {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filters-panel .state-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.filters-panel .state-filter {
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  height: auto;
+  padding: 7px 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  line-height: 1.1;
+}
+
+.filters-panel .state-filter span {
+  font-size: 17px;
+  line-height: 18px;
+}
+
+.filters-panel .state-filter small {
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+}
+
+.filters-panel .filter-subblock {
+  min-width: 0;
+}
+
+.filters-panel .filter-subtitle {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+
+.filters-panel .filter-select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+@media (max-width: 700px) {
+  .filters-panel .filter-row {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .filters-panel .filter-row .filter-block + .filter-block {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .filters-panel .state-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filters-panel .state-filter {
+    min-height: 54px;
+  }
+
+  .filters-panel .state-filter small {
+    font-size: 10px;
+  }
+}
+
+@media (min-width: 701px) {
+  .filters-panel .state-filter {
+    min-height: 62px;
+  }
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="role-app">
+
+    <header class="topbar">
+        <h1>
+            <img
+                src="/static/logo.png"
+                alt="Logo"
+                onerror="this.style.display='none'"
+            >
+            <span class="brand-title">АЛЬБИОН. Мониторинг экранов</span>
+        </h1>
+
+        <div class="right">
+            {% if role == "staff" %}
+            <button
+                type="button"
+                class="add-task-btn"
+                style="
+                    background:#ef4444;
+                    color:#fff;
+                    border:none;
+                    padding:10px 20px;
+                    border-radius:10px;
+                    font-weight:700;
+                    cursor:pointer;
+                    display:inline-flex;
+                    align-items:center;
+                    gap:8px;
+                    font-size:14px;
+                    box-shadow:0 2px 8px rgba(239,68,68,.4);
+                "
+                onclick="openMonitoringForm()"
+            >
+                📷 Мониторинг
+            </button>
+            {% endif %}
+
+            <button
+                type="button"
+                class="btn ghost"
+                onclick="window.location.href='/login'"
+            >
+                Выйти
+            </button>
+        </div>
+    </header>
+
+    <main class="role-app-main">
+
+        {% if role == "staff" %}
+        <section
+            id="monitoring-form"
+            class="monitoring-form"
+            style="display:none"
+        >
+            <div class="monitoring-form-title">
+                Новый мониторинг
+            </div>
+
+            <div class="monitoring-form-field">
+                <label for="monitoring-address">
+                    Адрес
+                </label>
+
+                <select id="monitoring-address">
+                    <option value="">Выберите адрес</option>
+                </select>
+            </div>
+
+            <div class="monitoring-form-field">
+                <label for="monitoring-text">
+                    Описание
+                </label>
+
+                <textarea
+                    id="monitoring-text"
+                    rows="4"
+                    placeholder="Опишите состояние конструкции"
+                ></textarea>
+            </div>
+
+            <div class="monitoring-form-field">
+                <label for="monitoring-media">
+                    Фото и видео
+                </label>
+
+                <input
+                    id="monitoring-media"
+                    type="file"
+                    accept="image/*,video/*"
+                    multiple
+                >
+
+                <div
+                    id="monitoring-media-list"
+                    class="monitoring-media-list"
+                ></div>
+            </div>
+
+            <div class="monitoring-form-actions">
+                <button
+                    type="button"
+                    class="monitoring-cancel-btn"
+                    onclick="closeMonitoringForm()"
+                >
+                    Отмена
+                </button>
+
+                <button
+                    type="button"
+                    class="monitoring-submit-btn"
+                    onclick="submitMonitoring()"
+                >
+                    Отправить
+                </button>
+            </div>
+
+            <div
+                id="monitoring-form-error"
+                class="monitoring-form-error"
+                style="display:none"
+            ></div>
+        </section>
+        {% endif %}
+
+        <div class="feed-toolbar">
+
+            <div class="toolbar-column">
+
+                <button class="toolbar-toggle" id="filtersToggle">
+                    <span>ФИЛЬТРЫ</span>
+                    <span class="toolbar-arrow">▼</span>
+                </button>
+
+                <div class="filters-panel" id="filtersPanel">
+
+                    <div class="filter-row">
+
+                        <div class="filter-block">
+                            <div class="filter-block-title">Тип</div>
+
+                            <div class="type-filters">
+                                <button class="type-filter active" data-filter="all">
+                                    Все
+                                </button>
+                                <button class="type-filter task-filter" data-filter="task">
+                                    Задания
+                                </button>
+                                <button class="type-filter monitoring-filter" data-filter="monitoring">
+                                    Мониторинг
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="filter-block">
+                            <div class="filter-block-title">Сортировка</div>
+
+                            <div class="sort-filters">
+                                <button
+                                    class="sort-filter"
+                                    data-sort="date"
+                                    data-direction="desc"
+                                >
+                                    Дата <span class="sort-direction">↓</span>
+                                </button>
+
+                                <button
+                                    class="sort-filter active"
+                                    data-sort="message"
+                                    data-direction="desc"
+                                >
+                                    Посл. сообщение <span class="sort-direction">↓</span>
+                                </button>
+
+                                <button
+                                    class="sort-filter"
+                                    data-sort="number"
+                                    data-direction="asc"
+                                >
+                                    Номер <span class="sort-direction">↑</span>
+                                </button>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <div class="filter-block">
+                        <div class="filter-block-title">Состояние</div>
+
+                        <div class="state-filters">
+
+                            <button class="state-filter" data-state="new" title="Новое">
+                                <span>✨</span>
+                                <small>Новое</small>
+                            </button>
+
+                            <button class="state-filter" data-state="pending_review" title="На рассмотрении">
+                                <span>◉</span>
+                                <small>На рассмотрении</small>
+                            </button>
+
+                            <button class="state-filter" data-state="rework" title="На доработке">
+                                <span>⚙</span>
+                                <small>На доработке</small>
+                            </button>
+
+                            <button class="state-filter" data-state="overdue" title="Просроченное">
+                                <span>⏰</span>
+                                <small>Просроченное</small>
+                            </button>
+
+                            <button class="state-filter" data-state="important" title="Важное">
+                                <span>★</span>
+                                <small>Важное</small>
+                            </button>
+
+                            <button class="state-filter" data-state="done" title="Выполнено">
+                                <span>✓</span>
+                                <small>Выполнено</small>
+                            </button>
+
+                            <button class="state-filter" data-state="closed" title="Отменено">
+                                <span>×</span>
+                                <small>Отменено</small>
+                            </button>
+
+                            <button class="state-filter" data-state="director" title="Комментарий директора">
+                                <span>💬</span>
+                                <small>Комментарий директора</small>
+                            </button>
+
+                        </div>
+                    </div>
+
+                    <div class="filter-block">
+                        <div class="filter-block-title">Разное</div>
+
+                        <div class="filter-row">
+
+                            <div class="filter-subblock">
+                                <div class="filter-subtitle">Автор</div>
+
+                                <select id="filterAuthor" class="filter-select">
+                                    <option value="">Все</option>
+                                    <option value="admin">Админ</option>
+                                    <option value="director">Директор</option>
+                                </select>
+                            </div>
+
+                            <div class="filter-subblock">
+                                <div class="filter-subtitle">Поставщик</div>
+
+                                <select id="filterSupplier" class="filter-select">
+                                    <option value="">Все</option>
+                                    <option value="Лед Гарант">Лед Гарант</option>
+                                    <option value="Вижн Лед">Вижн Лед</option>
+                                </select>
+                            </div>
+
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+
+            <div class="toolbar-column">
+
+                <button class="toolbar-toggle" id="statsToggle">
+                    <span>СТАТИСТИКА</span>
+                    <span class="toolbar-arrow">▼</span>
+                </button>
+
+                <div class="stats-panel" id="statsPanel">
+
+                    <div class="stats-section">
+                        <div class="stats-title">ЗАДАНИЯ</div>
+
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <strong id="statTasksTotal">0</strong>
+                                <span>Всего</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statTasksNew">0</strong>
+                                <span>Новых</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statTasksOverdue">0</strong>
+                                <span>Просрочено</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statTasksImportant">0</strong>
+                                <span>Важных</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statTasksDone">0</strong>
+                                <span>Закрыто</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-section">
+                        <div class="stats-title">МОНИТОРИНГ</div>
+
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <strong id="statMonitoringTotal">0</strong>
+                                <span>Всего</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statMonitoringMessages">0</strong>
+                                <span>С сообщениями</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statMonitoringToday">0</strong>
+                                <span>Сегодня</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong id="statDirectorComments">0</strong>
+                                <span>С комментарием</span>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <div class="role-location-search">
+            <select id="filterCity">
+                <option value="">Все города</option>
+            </select>
+
+            <input
+                id="filterSearch"
+                placeholder="Поиск по адресу..."
+            >
+        </div>
+
+        <div id="feed" class="feed-container">
+            Загрузка...
+        </div>
+
+    </main>
+
+</div>
+
+<script src="/static/common_cards.js"></script>
+<script src="/static/role_app.js"></script>
+
+</body>
+</html>
