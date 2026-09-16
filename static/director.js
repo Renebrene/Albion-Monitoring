@@ -308,14 +308,17 @@ const renderFeed = items => {
 
   feed.innerHTML = items.map(item => {
     const isTask = item.type === "task";
+    const isCrewReport = item.type === "crew_report";
 
-    const typeBadge = isTask
-      ? (
-          item.author_role === "director"
-            ? '<span class="type-badge director-type-task-director">ЗАДАНИЕ</span>'
-            : '<span class="type-badge director-type-task">ЗАДАНИЕ</span>'
-        )
-      : '<span class="type-badge director-type-monitoring">МОНИТОРИНГ</span>';
+    const typeBadge = isCrewReport
+      ? '<span class="type-badge" style="background:#2563eb;color:#fff">ОТЧЕТ ЭКИПАЖ1</span>'
+      : isTask
+        ? (
+            item.author_role === "director"
+              ? '<span class="type-badge director-type-task-director">ЗАДАНИЕ</span>'
+              : '<span class="type-badge director-type-task">ЗАДАНИЕ</span>'
+          )
+        : '<span class="type-badge director-type-monitoring">МОНИТОРИНГ</span>';
 
     let statusBadge = "";
 
@@ -406,20 +409,30 @@ const renderFeed = items => {
       `;
     }
 
-    let lastDirectorComment = null;
+    let lastFeedComment = null;
+    let lastFeedCommentLabel = "Директор";
 
-    if(Array.isArray(item.director_comments) && item.director_comments.length) {
-      lastDirectorComment =
+    if(isCrewReport) {
+      const headComments = Array.isArray(item.head_comments)
+        ? item.head_comments
+        : [];
+
+      if(headComments.length) {
+        lastFeedComment = headComments[headComments.length - 1];
+        lastFeedCommentLabel = "Директор";
+      }
+    } else if(Array.isArray(item.director_comments) && item.director_comments.length) {
+      lastFeedComment =
         item.director_comments[item.director_comments.length - 1];
     } else {
-      lastDirectorComment =
+      lastFeedComment =
         [...messages]
           .reverse()
           .find(m => m.is_director_comment === true) || null;
     }
 
-    const directorCommentText = lastDirectorComment
-      ? String(lastDirectorComment.text || "")
+    const directorCommentText = lastFeedComment
+      ? String(lastFeedComment.text || "")
       : "";
 
     const directorCommentPreview = esc(directorCommentText)
@@ -453,6 +466,22 @@ const renderFeed = items => {
     const directorComments = Array.isArray(item.director_comments)
       ? item.director_comments
       : [];
+
+    const headComments = isCrewReport && Array.isArray(item.head_comments)
+      ? item.head_comments
+      : [];
+
+    const headCommentsHtml = headComments.map(c => `
+      <div class="director-comment">
+        <div class="director-comment-label">
+          Директор (${esc(fmtDirectorDate(c.created_at))})
+        </div>
+        <div class="director-comment-text">
+          ${esc(String(c.text || "")).replace(/\n/g, "<br>")}
+          ${renderDirectorCommentMedia(c.media)}
+        </div>
+      </div>
+    `).join("");
 
     const chatMessages = messages
       .filter(m => m.is_director_comment !== true)
@@ -551,12 +580,12 @@ const renderFeed = items => {
               ${lastMsgHtml}
             </div>
 
-            ${lastDirectorComment
+            ${lastFeedComment
               ? `
                 <div class="closed-director-comment">
-                  ${directorMark}
+                  ${isCrewReport ? "" : directorMark}
                   <span>
-                    <b>Директор (${esc(fmtDirectorDate(lastDirectorComment.created_at))})</b>
+                    <b>${esc(lastFeedCommentLabel)} (${esc(fmtDirectorDate(lastFeedComment.created_at))})</b>
                     ${directorCommentPreview}
                   </span>
                 </div>
@@ -639,13 +668,25 @@ const renderFeed = items => {
             ${chatHtml}
           </div>
 
-          ${directorCommentsHtml
-            ? `
-              <div class="director-comments">
-                ${directorCommentsHtml}
-              </div>
-            `
-            : ''
+          ${isCrewReport
+            ? (
+                headCommentsHtml
+                  ? `
+                    <div class="director-comments">
+                      ${headCommentsHtml}
+                    </div>
+                  `
+                  : ''
+              )
+            : (
+                directorCommentsHtml
+                  ? `
+                    <div class="director-comments">
+                      ${directorCommentsHtml}
+                    </div>
+                  `
+                  : ''
+              )
           }
 
           ${isTask && ["admin", "director"].includes(myRole)
@@ -801,7 +842,13 @@ const applyFilters = items => {
 
   // Тип.
   if(currentFilter !== "all") {
-    result = result.filter(item => item.type === currentFilter);
+    result = result.filter(item => {
+      if(currentFilter === "monitoring") {
+        return item.type === "monitoring" || item.type === "crew_report";
+      }
+
+      return item.type === currentFilter;
+    });
   }
 
   // Состояние.
@@ -1576,7 +1623,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 
 // Выход из системы
-document.getElementById("logout").onclick = () => {
+document.getElementById("logout").onclick = async () => {
+  try {
+    await API("/api/logout", {
+      method: "POST"
+    });
+  } catch(error) {
+    console.error("Ошибка выхода:", error);
+  }
+
   localStorage.clear();
   location.href = "/";
 };

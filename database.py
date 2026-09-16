@@ -36,6 +36,16 @@ def init_schema():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                login TEXT NOT NULL,
+                role TEXT NOT NULL,
+                login_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                logout_at DATETIME,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
             CREATE TABLE IF NOT EXISTS addresses (
                 id INTEGER PRIMARY KEY,
                 city TEXT NOT NULL,

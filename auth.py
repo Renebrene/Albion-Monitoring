@@ -22,14 +22,23 @@ def verify_password(password: str, hash_: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hash_.encode("utf-8"))
 
 
-def create_token(user_id: int, login: str, role: str) -> str:
-    """Создаёт JWT-токен для пользователя"""
+def create_token(
+    user_id: int,
+    login: str,
+    role: str,
+    session_id: Optional[int] = None,
+) -> str:
+    """Создаёт JWT-токен для пользователя."""
     payload = {
         "sub": user_id,
         "login": login,
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_HOURS),
     }
+
+    if session_id is not None:
+        payload["session_id"] = session_id
+
     return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
 
 

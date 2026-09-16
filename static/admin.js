@@ -8,78 +8,57 @@ function renderMonitoringMedia(media) {
   if(!Array.isArray(media) || !media.length) return "";
 
   return `
-    <div class="client-comment-attachments" style="margin-top:8px">
-      ${media.map(m => {
-        let url = "";
-        let name = "";
-        let mediaType = "";
+    <div class="feed-media-block">
+      <div class="feed-media-title">Прикреплённые фото и видео</div>
 
-        if(m && typeof m === "object") {
-          url = String(m.url || "");
-          mediaType = String(m.type || m.media_type || "");
+      <div class="feed-media-list">
+        ${media.map((m, index) => {
+          let url = "";
+          let type = "";
 
-          if(url) {
-            name = url.split("/").pop() || "Файл";
+          if(m && typeof m === "object") {
+            url = String(m.url || "");
+            type = String(m.type || m.media_type || "");
+          } else {
+            const name = String(m || "");
+            url = name.startsWith("/uploads/")
+              ? name
+              : `/uploads/${encodeURIComponent(name)}`;
           }
-        } else {
-          name = String(m || "");
-          url = name.startsWith("/uploads/")
-            ? name
-            : `/uploads/${encodeURIComponent(name)}`;
-        }
 
-        if(!url) return "";
+          if(!url) return "";
 
-        const isImage =
-          mediaType === "photo" ||
-          /\.(jpg|jpeg|png|webp|gif)$/i.test(name);
+          const isVideo =
+            type === "video" ||
+            /\.(mp4|mov|webm|m4v)$/i.test(url);
 
-        const isVideo =
-          mediaType === "video" ||
-          /\.(mp4|mov|webm|m4v)$/i.test(name);
-
-        if(isImage) {
           return `
-            <div class="client-comment-attachment client-comment-image-attachment">
-              <a
-                href="${url}"
-                target="_blank"
-                rel="noopener"
-                title="Открыть фотографию"
-              >
-                <img
-                  src="${url}"
-                  class="client-comment-image"
-                  alt="Фото"
-                  loading="lazy"
-                >
-              </a>
-              <a href="${url}" download>Скачать</a>
+            <div class="feed-media-item">
+              ${
+                isVideo
+                  ? `
+                    <video
+                      src="${esc(url)}"
+                      controls
+                      preload="metadata"
+                    ></video>
+                  `
+                  : `
+                    <img
+                      src="${esc(url)}"
+                      alt="Вложение ${index + 1}"
+                      loading="lazy"
+                      onclick="event.stopPropagation(); window.open('${esc(url)}', '_blank')"
+                    >
+                  `
+              }
             </div>
           `;
-        }
-
-        return `
-          <div class="client-comment-attachment">
-            <span>${isVideo ? "🎬" : "📎"}</span>
-            <a
-              class="client-comment-attachment-name"
-              href="${url}"
-              target="_blank"
-              rel="noopener"
-              title="Открыть файл"
-            >
-              ${name.replace(/</g, "&lt;")}
-            </a>
-            <a href="${url}" download>Скачать</a>
-          </div>
-        `;
-      }).join("")}
+        }).join("")}
+      </div>
     </div>
   `;
-}
-
-function renderDirectorCommentMedia(media) {
+}function renderDirectorCommentMedia(media) {
   if(!Array.isArray(media) || !media.length) return "";
 
   return `
@@ -385,14 +364,17 @@ const renderFeed = items => {
 
   feed.innerHTML = items.map(item => {
     const isTask = item.type === "task";
+    const isCrewReport = item.type === "crew_report";
 
-    const typeBadge = isTask
-      ? (
-          item.author_role === "director"
-            ? '<span class="type-badge director-type-task-director">ЗАДАНИЕ</span>'
-            : '<span class="type-badge director-type-task">ЗАДАНИЕ</span>'
-        )
-      : '<span class="type-badge director-type-monitoring">МОНИТОРИНГ</span>';
+    const typeBadge = isCrewReport
+      ? '<span class="type-badge" style="background:#2563eb;color:#fff">ОТЧЕТ ЭКИПАЖ1</span>'
+      : isTask
+        ? (
+            item.author_role === "director"
+              ? '<span class="type-badge director-type-task-director">ЗАДАНИЕ</span>'
+              : '<span class="type-badge director-type-task">ЗАДАНИЕ</span>'
+          )
+        : '<span class="type-badge director-type-monitoring">МОНИТОРИНГ</span>';
 
     let statusBadge = "";
 
@@ -474,20 +456,30 @@ const renderFeed = items => {
       `;
     }
 
-    let lastDirectorComment = null;
+    let lastFeedComment = null;
+    let lastFeedCommentLabel = "Директор";
 
-    if(Array.isArray(item.director_comments) && item.director_comments.length) {
-      lastDirectorComment =
+    if(isCrewReport) {
+      const headComments = Array.isArray(item.head_comments)
+        ? item.head_comments
+        : [];
+
+      if(headComments.length) {
+        lastFeedComment = headComments[headComments.length - 1];
+        lastFeedCommentLabel = "Директор";
+      }
+    } else if(Array.isArray(item.director_comments) && item.director_comments.length) {
+      lastFeedComment =
         item.director_comments[item.director_comments.length - 1];
     } else {
-      lastDirectorComment =
+      lastFeedComment =
         [...messages]
           .reverse()
           .find(m => m.is_director_comment === true) || null;
     }
 
-    const directorCommentText = lastDirectorComment
-      ? String(lastDirectorComment.text || "")
+    const directorCommentText = lastFeedComment
+      ? String(lastFeedComment.text || "")
       : "";
 
     const directorCommentPreview = esc(directorCommentText)
@@ -521,6 +513,22 @@ const renderFeed = items => {
     const directorComments = Array.isArray(item.director_comments)
       ? item.director_comments
       : [];
+
+    const headComments = isCrewReport && Array.isArray(item.head_comments)
+      ? item.head_comments
+      : [];
+
+    const headCommentsHtml = headComments.map(c => `
+      <div class="director-comment">
+        <div class="director-comment-label">
+          Директор (${esc(fmtDirectorDate(c.created_at))})
+        </div>
+        <div class="director-comment-text">
+          ${esc(String(c.text || "")).replace(/\n/g, "<br>")}
+          ${renderDirectorCommentMedia(c.media)}
+        </div>
+      </div>
+    `).join("");
 
     const chatMessages = messages
       .filter(m => m.is_director_comment !== true)
@@ -650,12 +658,12 @@ const renderFeed = items => {
               ${lastMsgHtml}
             </div>
 
-            ${lastDirectorComment
+            ${lastFeedComment
               ? `
                 <div class="closed-director-comment">
-                  ${directorMark}
+                  ${isCrewReport ? "" : directorMark}
                   <span>
-                    <b>Директор (${esc(fmtDirectorDate(lastDirectorComment.created_at))})</b>
+                    <b>${esc(lastFeedCommentLabel)} (${esc(fmtDirectorDate(lastFeedComment.created_at))})</b>
                     ${directorCommentPreview}
                   </span>
                 </div>
@@ -723,13 +731,25 @@ const renderFeed = items => {
             ${chatHtml}
           </div>
 
-          ${directorCommentsHtml
-            ? `
-              <div class="director-comments">
-                ${directorCommentsHtml}
-              </div>
-            `
-            : ''
+          ${isCrewReport
+            ? (
+                headCommentsHtml
+                  ? `
+                    <div class="director-comments">
+                      ${headCommentsHtml}
+                    </div>
+                  `
+                  : ''
+              )
+            : (
+                directorCommentsHtml
+                  ? `
+                    <div class="director-comments">
+                      ${directorCommentsHtml}
+                    </div>
+                  `
+                  : ''
+              )
           }
 
           <div
@@ -903,7 +923,13 @@ const applyFilters = items => {
 
   // Тип.
   if(currentFilter !== "all") {
-    result = result.filter(item => item.type === currentFilter);
+    result = result.filter(item => {
+      if(currentFilter === "monitoring") {
+        return item.type === "monitoring" || item.type === "crew_report";
+      }
+
+      return item.type === currentFilter;
+    });
   }
 
   // Состояние.
@@ -979,17 +1005,27 @@ const applyFilters = items => {
     );
   }
 
-  // Поиск.
-  const search = document.getElementById("feedSearch")?.value
-    ?.trim()
-    .toLowerCase();
+  // Город.
+  const cityFilter =
+    document.getElementById("filterCity")?.value
+      ?.trim()
+      .toLowerCase() || "";
 
-  if(search) {
+  if(cityFilter) {
     result = result.filter(item =>
-      String(item.city || "").toLowerCase().includes(search) ||
-      String(item.address_name || "").toLowerCase().includes(search) ||
-      String(item.text || "").toLowerCase().includes(search) ||
-      String(item.manufacturer || "").toLowerCase().includes(search)
+      String(item.city || "").trim().toLowerCase() === cityFilter
+    );
+  }
+
+  // Поиск по адресу.
+  const addressSearch =
+    document.getElementById("filterSearch")?.value
+      ?.trim()
+      .toLowerCase() || "";
+
+  if(addressSearch) {
+    result = result.filter(item =>
+      String(item.address_name || "").trim().toLowerCase() === addressSearch
     );
   }
 
@@ -1229,17 +1265,19 @@ const loadAddresses = async () => {
 
     const cityList = document.getElementById("taskCityList");
 
-    if(cityList) {
-      const cities = [...new Set(
-        directorAddresses
-          .map(a => String(a.city || "").trim())
-          .filter(Boolean)
-      )].sort((a, b) => a.localeCompare(b, "ru"));
+    const cities = [...new Set(
+      directorAddresses
+        .map(a => String(a.city || "").trim())
+        .filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, "ru"));
 
+    if(cityList) {
       cityList.innerHTML = cities
         .map(city => `<option value="${esc(city)}"></option>`)
         .join("");
     }
+
+
 
     updateTaskAddressList();
 
@@ -1576,6 +1614,109 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+
+  // Авторизация.
+  const authToggle =
+    document.getElementById("authToggle");
+
+  const authPanel =
+    document.getElementById("authPanel");
+
+  const authOnlineCount =
+    document.getElementById("authOnlineCount");
+
+  const authSessionsBody =
+    document.getElementById("authSessionsBody");
+
+  const formatAuthDateTime = (value) => {
+    if(!value) return "—";
+
+    const date = new Date(
+      value.replace(" ", "T") + "Z"
+    );
+
+    if(Number.isNaN(date.getTime())) {
+      return value;
+    }
+
+    return date.toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  };
+
+  const loadAuthSessions = async () => {
+    if(!authSessionsBody) return;
+
+    try {
+      const data = await API("/api/auth-sessions");
+
+      if(authOnlineCount) {
+        authOnlineCount.textContent =
+          String(data.online_count ?? 0);
+      }
+
+      const sessions = data.sessions || [];
+
+      if(!sessions.length) {
+        authSessionsBody.innerHTML = `
+          <tr>
+            <td colspan="3" class="auth-empty">
+              Нет данных
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      authSessionsBody.innerHTML = sessions.map(session => `
+        <tr>
+          <td>
+            ${session.login || "—"}
+            <div class="auth-role">
+              ${session.role || ""}
+            </div>
+          </td>
+
+          <td>
+            ${formatAuthDateTime(session.login_at)}
+          </td>
+
+          <td class="${!session.logout_at ? "auth-active" : ""}">
+            ${formatAuthDateTime(session.logout_at)}
+          </td>
+        </tr>
+      `).join("");
+
+    } catch(error) {
+      console.error("Ошибка загрузки авторизаций:", error);
+
+      if(authSessionsBody) {
+        authSessionsBody.innerHTML = `
+          <tr>
+            <td colspan="3" class="auth-empty">
+              Ошибка загрузки
+            </td>
+          </tr>
+        `;
+      }
+    }
+  };
+
+  if(authToggle && authPanel) {
+    authToggle.addEventListener("click", async () => {
+      const open = authPanel.classList.toggle("open");
+      authToggle.classList.toggle("open", open);
+
+      if(open) {
+        await loadAuthSessions();
+      }
+    });
+  }
+
   const me = await API("/api/me").catch(() => null);
 
   if(!me || !["director", "admin"].includes(me.role)) {
@@ -1675,10 +1816,71 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
-  document.getElementById("feedSearch")?.addEventListener(
-    "input",
+  // Города для фильтра — из общего справочника API
+  const cities = await API("/api/cities");
+  const citySel = document.getElementById("filterCity");
+
+  if(citySel) {
+    cities.forEach(c => {
+      const o = document.createElement("option");
+      o.value = c;
+      o.textContent = c;
+      citySel.appendChild(o);
+    });
+  }
+
+  await loadAddresses();
+
+  const filterCity = document.getElementById("filterCity");
+  const filterAddress = document.getElementById("filterSearch");
+
+  const updateAddressFilter = () => {
+    if(!filterAddress) return;
+
+    const selectedCity =
+      filterCity?.value?.trim().toLowerCase() || "";
+
+    const addresses = directorAddresses
+      .filter(a => {
+        if(!selectedCity) return true;
+
+        return String(a.city || "")
+          .trim()
+          .toLowerCase() === selectedCity;
+      })
+      .sort((a, b) =>
+        String(a.address_name || "")
+          .localeCompare(
+            String(b.address_name || ""),
+            "ru"
+          )
+      );
+
+    filterAddress.innerHTML =
+      `<option value="">Все адреса</option>` +
+      addresses
+        .map(a =>
+          `<option value="${esc(a.address_name || "")}">${
+            esc(a.address_name || "")
+          }</option>`
+        )
+        .join("");
+  };
+
+  filterCity?.addEventListener(
+    "change",
+    () => {
+      updateAddressFilter();
+      refreshFeed();
+    }
+  );
+
+  filterAddress?.addEventListener(
+    "change",
     refreshFeed
   );
+
+  updateAddressFilter();
 
   document.getElementById("taskModal")?.addEventListener(
     "click",
@@ -1694,7 +1896,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 
 // Выход из системы
-document.getElementById("logout").onclick = () => {
+document.getElementById("logout").onclick = async () => {
+  try {
+    await API("/api/logout", {
+      method: "POST"
+    });
+  } catch(error) {
+    console.error("Ошибка выхода:", error);
+  }
+
   localStorage.clear();
   location.href = "/";
 };

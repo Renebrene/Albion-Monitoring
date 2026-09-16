@@ -1703,9 +1703,24 @@ window.deleteTask = async (id) => {
   if(!me){ location.href = "/"; return; }
   myLogin = me.login;
   myRole = me.role;
-  
-    document.getElementById("whoami").textContent = me.login;
-  
+
+  document.getElementById("whoami").textContent = me.login;
+
+  // Статистика недоступна для роли Сервис
+  if (myRole === "service") {
+    const statsColumn = document.getElementById("statsColumn");
+    console.log("SERVICE: statsColumn =", statsColumn);
+    if (statsColumn) {
+      statsColumn.style.display = "none";
+      console.log("SERVICE: statsColumn display =", statsColumn.style.display);
+    }
+
+    const miscFilterBlock = document.getElementById("miscFilterBlock");
+    if (miscFilterBlock) {
+      miscFilterBlock.style.display = "none";
+    }
+  }
+
   // Показываем кнопки в зависимости от роли
   if(myRole === "admin") {
     document.getElementById("adminSettingsBtn").style.display = "inline-flex";

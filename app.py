@@ -140,6 +140,74 @@ def tasks_page(request: Request):
 # ==========================================================
 
 # ---------- Авторизация ----------
+@app.get("/api/auth-sessions")
+def auth_sessions(request: Request):
+    user = get_current_user(request)
+
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Доступ только для администратора",
+        )
+
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, login, role, login_at, logout_at
+            FROM auth_sessions
+            ORDER BY login_at DESC, id DESC
+            """
+        ).fetchall()
+
+        online_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM auth_sessions
+            WHERE logout_at IS NULL
+            """
+        ).fetchone()[0]
+
+    return {
+        "online_count": online_count,
+        "sessions": [
+            {
+                "id": row["id"],
+                "login": row["login"],
+                "role": row["role"],
+                "login_at": row["login_at"],
+                "logout_at": row["logout_at"],
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.post("/api/logout")
+def logout(request: Request):
+    user = get_current_user(request)
+    session_id = user.get("session_id")
+
+    # Старый JWT без session_id не закрывает никакую сессию.
+    # После обновления приложения пользователь просто войдёт заново.
+    if not session_id:
+        return {"ok": True}
+
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE auth_sessions
+            SET logout_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND user_id = ?
+              AND logout_at IS NULL
+            """,
+            (session_id, user["sub"]),
+        )
+        conn.commit()
+
+    return {"ok": True}
+
+
 @app.post("/api/login")
 def login(data: LoginIn):
     with get_db() as conn:
@@ -149,7 +217,26 @@ def login(data: LoginIn):
         ).fetchone()
     if not row or not verify_password(data.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
-    token = create_token(row["id"], row["login"], row["role"])
+    # Создаём отдельную сессию авторизации.
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO auth_sessions (user_id, login, role)
+            VALUES (?, ?, ?)
+            """,
+            (row["id"], row["login"], row["role"]),
+        )
+        session_id = cur.lastrowid
+        conn.commit()
+
+    # Привязываем JWT к конкретной сессии.
+    token = create_token(
+        row["id"],
+        row["login"],
+        row["role"],
+        session_id=session_id,
+    )
+
     return {
         "token": token,
         "role": row["role"],
@@ -2246,7 +2333,7 @@ def get_unified_feed(request: Request):
     - комментарии директора не влияют на last_message_*;
     - комментарии директора не влияют на сортировку карточек.
     """
-    get_current_user(request)
+    user = get_current_user(request)
 
     from datetime import datetime
     import json
@@ -2568,7 +2655,134 @@ def get_unified_feed(request: Request):
             result.append(item)
 
         # =========================================================
-        # 3. ПРОСРОЧЕННЫЕ ЗАДАНИЯ
+        # 3. ОТЧЁТЫ ЭКИПАЖА
+        # =========================================================
+        # Отчёты экипажа видят только Admin и Director.
+        # Они идут отдельным типом crew_report.
+        if user.get("role") in ("admin", "director", "head"):
+            crew_reports = conn.execute("""
+                SELECT
+                    cr.id,
+                    cr.address_id,
+                    cr.user_id,
+                    cr.text,
+                    cr.created_at,
+                    u.login AS crew_login,
+                    u.role AS crew_role,
+                    a.city,
+                    a.address_name,
+                    a.manufacturer
+                FROM crew_monitorings cr
+                JOIN users u
+                  ON u.id = cr.user_id
+                JOIN addresses a
+                  ON a.id = cr.address_id
+                WHERE a.active = 1
+                ORDER BY cr.created_at DESC
+                LIMIT 300
+            """).fetchall()
+
+            for cr in crew_reports:
+                report_id = cr["id"]
+
+                media_rows = conn.execute("""
+                    SELECT
+                        filename,
+                        media_type
+                    FROM crew_monitoring_media
+                    WHERE crew_monitoring_id = ?
+                    ORDER BY created_at ASC, id ASC
+                """, (report_id,)).fetchall()
+
+                report_media = [
+                    {
+                        "url": f"/uploads/{m['filename']}",
+                        "type": m["media_type"]
+                    }
+                    for m in media_rows
+                ]
+
+                # Комментарии Head вместе с их фото/видео.
+                head_comment_rows = conn.execute("""
+                    SELECT
+                        c.id,
+                        c.text,
+                        c.created_at,
+                        u.login AS author
+                    FROM crew_report_comments c
+                    JOIN users u
+                      ON u.id = c.user_id
+                    WHERE c.crew_monitoring_id = ?
+                      AND u.role = 'head'
+                    ORDER BY c.created_at ASC, c.id ASC
+                """, (report_id,)).fetchall()
+
+                head_comments = []
+
+                for hc in head_comment_rows:
+                    comment_media_rows = conn.execute("""
+                        SELECT
+                            filename,
+                            media_type
+                        FROM crew_report_comment_media
+                        WHERE comment_id = ?
+                        ORDER BY created_at ASC, id ASC
+                    """, (hc["id"],)).fetchall()
+
+                    head_comments.append({
+                        "id": hc["id"],
+                        "text": hc["text"],
+                        "created_at": hc["created_at"],
+                        "author": hc["author"],
+                        "role": "head",
+                        "media": [
+                            {
+                                "url": f"/uploads/{m['filename']}",
+                                "type": m["media_type"]
+                            }
+                            for m in comment_media_rows
+                        ]
+                    })
+
+                message = {
+                    "id": report_id,
+                    "text": cr["text"],
+                    "created_at": cr["created_at"],
+                    "author": cr["crew_login"],
+                    "role": "crew",
+                    "media": report_media,
+                    "is_director_comment": False
+                }
+
+                item = {
+                    "type": "crew_report",
+                    "id": report_id,
+                    "address_id": cr["address_id"],
+                    "text": cr["text"],
+                    "description": cr["text"],
+                    "created_at": cr["created_at"],
+                    "monitoring_date": cr["created_at"],
+                    "city": cr["city"],
+                    "address_name": cr["address_name"],
+                    "manufacturer": cr["manufacturer"],
+                    "author": cr["crew_login"],
+                    "author_role": cr["crew_role"],
+                    "status": "open",
+                    "is_important": False,
+                    "close_reason": None,
+                    "media": report_media,
+                    "messages": [message],
+                    "director_comments": [],
+                    "head_comments": head_comments,
+                    "has_director_comment": False,
+                    "last_message_at": cr["created_at"],
+                    "last_message_author": cr["crew_login"]
+                }
+
+                result.append(item)
+
+        # =========================================================
+        # 4. ПРОСРОЧЕННЫЕ ЗАДАНИЯ
         # =========================================================
         now = datetime.utcnow()
 
