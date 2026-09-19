@@ -567,8 +567,34 @@ const renderFeed = items => {
     }).join("") ||
       '<div style="text-align:center;color:var(--muted);font-size:12px;padding:10px">Пока нет сообщений</div>';
 
-    const taskActionsHtml =
-      isTask && ["admin", "director"].includes(myRole)
+    window.hideFeedItem = async (itemType, itemId, event) => {
+  if (event) event.stopPropagation();
+
+  const labels = {
+    task: "задание",
+    monitoring: "мониторинг",
+    crew_report: "отчёт экипажа"
+  };
+
+  const label = labels[itemType] || "запись";
+
+  if (!confirm(`Скрыть ${label}?`)) return;
+
+  try {
+    await API(`/api/feed/${itemType}/${itemId}/hide`, {
+      method: "POST"
+    });
+
+    toast(`✓ ${label.charAt(0).toUpperCase() + label.slice(1)} скрыто`);
+    await loadFeed();
+  } catch (e) {
+    toast(e.message || "Не удалось скрыть запись");
+  }
+};
+
+const taskActionsHtml =
+      (isTask || item.type === "monitoring" || item.type === "crew_report") &&
+      ["admin", "director"].includes(myRole)
         ? `
           <div
             class="task-actions"
@@ -588,13 +614,25 @@ const renderFeed = items => {
               : ''
             }
 
-            ${["open", "rework"].includes(item.workflow_status || "open") &&
+            ${item.type === "task" &&
+              ["open", "rework"].includes(item.workflow_status || "open") &&
               (myRole === "admin" || item.created_by_role === "director")
               ? `
                 <button
                   class="btn"
                   onclick="closeDirectorTask(${item.id})"
                 >✕</button>
+              `
+              : ''
+            }
+
+            ${myRole === "admin" && ["task", "monitoring", "crew_report"].includes(item.type)
+              ? `
+                <button
+                  class="btn"
+                  onclick="hideFeedItem('${item.type}', ${item.id}, event)"
+                  title="Скрыть запись"
+                >Скрыть</button>
               `
               : ''
             }

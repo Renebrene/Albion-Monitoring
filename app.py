@@ -584,6 +584,7 @@ def list_crew_reports(request: Request):
             JOIN users u ON u.id = cr.user_id
             JOIN addresses a ON a.id = cr.address_id
             WHERE u.role = 'crew'
+              AND cr.hidden = 0
             ORDER BY cr.created_at DESC, cr.id DESC
             """,
         ).fetchall()
@@ -684,6 +685,7 @@ def list_head_reports(request: Request):
             FROM crew_monitorings cr
             JOIN addresses a ON a.id = cr.address_id
             JOIN users u ON u.id = cr.user_id
+            WHERE cr.hidden = 0
             ORDER BY cr.created_at DESC, cr.id DESC
             """
         ).fetchall()
@@ -905,7 +907,7 @@ def list_reports(
             FROM reports r
             JOIN addresses a ON a.id = r.address_id
             JOIN users u ON u.id = r.user_id
-            WHERE 1=1
+            WHERE r.hidden = 0
         """
         params: list = []
         if city:
@@ -1177,7 +1179,7 @@ def list_tasks(
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
             LEFT JOIN users cu ON cu.id = t.closed_by
-            WHERE 1=1
+            WHERE t.hidden = 0
         """
         params: list = []
         if status and status != "all":
@@ -1546,23 +1548,76 @@ def task_status_history(task_id: int, request: Request):
 
 @app.delete("/api/tasks/{task_id}")
 def delete_task(task_id: int, request: Request):
+    # Оставляем старый endpoint для совместимости,
+    # но физического удаления больше нет.
     require_any(request, ["admin"])
+
     with get_db() as conn:
-        media = conn.execute(
-            "SELECT filename FROM media WHERE task_id = ? AND report_id IS NULL",
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE id = ?",
             (task_id,),
-        ).fetchall()
-        for m in media:
-            try:
-                (UPLOADS_DIR / m["filename"]).unlink(missing_ok=True)
-            except Exception:
-                pass
-        conn.execute("DELETE FROM media WHERE task_id = ? AND report_id IS NULL", (task_id,))
-        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    return {"ok": True}
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Задание не найдено",
+            )
+
+        conn.execute(
+            "UPDATE tasks SET hidden = 1 WHERE id = ?",
+            (task_id,),
+        )
+
+    return {"ok": True, "hidden": True}
+
+
+@app.post("/api/feed/{item_type}/{item_id}/hide")
+def hide_feed_item(item_type: str, item_id: int, request: Request):
+    """Скрыть запись из отображения всех ролей без физического удаления."""
+    require_any(request, ["admin"])
+
+    table_by_type = {
+        "task": "tasks",
+        "monitoring": "reports",
+        "crew_report": "crew_monitorings",
+    }
+
+    table = table_by_type.get(item_type)
+
+    if table is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Неизвестный тип записи",
+        )
+
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT id FROM {table} WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Запись не найдена",
+            )
+
+        conn.execute(
+            f"UPDATE {table} SET hidden = 1 WHERE id = ?",
+            (item_id,),
+        )
+
+    return {
+        "ok": True,
+        "hidden": True,
+        "type": item_type,
+        "id": item_id,
+    }
 
 
 # ---------- Экспорт в Excel ----------
+
 @app.get("/api/export/excel")
 def export_excel(
     request: Request,
@@ -1914,7 +1969,9 @@ def get_monitoring(address_id: int, request: Request):
             SELECT r.id, r.text, r.created_at, u.login, u.role
             FROM reports r
             JOIN users u ON u.id = r.user_id
-            WHERE r.address_id = ? AND r.task_id IS NULL
+            WHERE r.address_id = ?
+              AND r.task_id IS NULL
+              AND r.hidden = 0
             ORDER BY r.created_at ASC
         """, (address_id,)).fetchall()
         
@@ -2092,6 +2149,7 @@ def director_feed(request: Request):
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
+            WHERE t.hidden = 0
             ORDER BY t.created_at DESC LIMIT 200
         """).fetchall()
         
@@ -2104,6 +2162,7 @@ def director_feed(request: Request):
             JOIN addresses a ON a.id = r.address_id
             JOIN users u ON u.id = r.user_id
             WHERE r.task_id IS NULL
+              AND r.hidden = 0
             ORDER BY r.created_at DESC LIMIT 200
         """).fetchall()
         
@@ -2363,6 +2422,7 @@ def get_unified_feed(request: Request):
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
+            WHERE t.hidden = 0
             ORDER BY t.created_at DESC
             LIMIT 300
         """).fetchall()
@@ -2536,6 +2596,7 @@ def get_unified_feed(request: Request):
             JOIN addresses a
               ON a.id = r.address_id
             WHERE r.task_id IS NULL
+              AND r.hidden = 0
               AND a.active = 1
             ORDER BY r.created_at DESC
             LIMIT 300
@@ -2678,6 +2739,7 @@ def get_unified_feed(request: Request):
                 JOIN addresses a
                   ON a.id = cr.address_id
                 WHERE a.active = 1
+                  AND cr.hidden = 0
                 ORDER BY cr.created_at DESC
                 LIMIT 300
             """).fetchall()

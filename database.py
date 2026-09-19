@@ -64,7 +64,8 @@ def init_schema():
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 task_id INTEGER REFERENCES tasks(id),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                text TEXT NOT NULL
+                text TEXT NOT NULL,
+                hidden INTEGER NOT NULL DEFAULT 0
             );
 
             -- Фото и видео (media_type: 'photo' или 'video')
@@ -84,7 +85,8 @@ def init_schema():
                 address_id INTEGER NOT NULL REFERENCES addresses(id),
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                text TEXT NOT NULL
+                text TEXT NOT NULL,
+                hidden INTEGER NOT NULL DEFAULT 0
             );
 
             -- Фото и видео мониторингов Экипажа.
@@ -126,7 +128,8 @@ def init_schema():
                 status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 closed_at DATETIME,
-                closed_by INTEGER REFERENCES users(id)
+                closed_by INTEGER REFERENCES users(id),
+                hidden INTEGER NOT NULL DEFAULT 0
             );
 
             -- Настройки приложения (вкл/выкл фото, видео)
@@ -166,6 +169,21 @@ def init_schema():
             CREATE INDEX IF NOT EXISTS idx_addresses_city ON addresses(city);
             CREATE INDEX IF NOT EXISTS idx_addresses_manufacturer ON addresses(manufacturer);
         """)
+
+        # Soft-hide для заданий, мониторингов и отчётов экипажа.
+        # Записи не удаляются физически и сохраняют всю историю/медиа.
+        for table in ("tasks", "reports", "crew_monitorings"):
+            columns = {
+                row["name"]
+                for row in conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if "hidden" not in columns:
+                conn.execute(
+                    f"ALTER TABLE {table} "
+                    "ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                )
 
         # Исходные имена загруженных файлов.
         # Старые записи остаются без имени, новые получают его при загрузке.
