@@ -1,0 +1,211 @@
+# Albion Monitoring — техническое описание
+
+**Назначение:** внутренний веб-сервис для мониторинга рекламных экранов по адресам и ведения рабочих заданий между командами «Сервис», «Экипаж», «Руководитель», «Директор» и администраторами.
+
+Документ описывает текущую реализацию в `app/`. Требования к оборудованию — стартовая эксплуатационная оценка, а не сертифицированный sizing: для production нужна нагрузочная проверка на ожидаемом числе пользователей и реальном объёме сообщений.
+
+## 1. Что делает приложение
+
+### Основные пользовательские функции
+
+- Аутентифицирует пользователей по логину и паролю; сервер хранит пароль только в виде bcrypt-хэша.
+- Показывает ролевые рабочие страницы и ленты мониторинга/заданий.
+- Позволяет выбрать город и адрес, отправить сообщение/отчёт, добавить фото или видео.
+- Поддерживает отдельные отчёты Экипажа и комментарии Руководителя.
+- Поддерживает жизненный цикл задания: создание → выполнение сервисом → проверка → завершение либо возврат на доработку; администратор/директор также могут закрыть допустимые задания.
+- Сохраняет историю переходов, комментарии и медиа-связи с задачами/отчётами.
+- Даёт администратору настройки доступности фото/видео, квот и пользователей: создать пользователя, просмотреть логин/роль, установить новый пароль.
+- Формирует XLSX-экспорт заданий и отчётов.
+
+Текущие пользовательские пароли посмотреть нельзя — bcrypt-хэш не обратим. Администратор задаёт новый пароль вместо просмотра старого.
+
+### Роли
+
+| Роль | Краткое назначение |
+|---|---|
+| `admin` | Управление настройками/пользователями, заданиями, экспортом, лентой и проверкой |
+| `service` | Мониторинг адресов, работа с назначенными заданиями и отправка на проверку |
+| `director` | Директорская лента, создание/проверка заданий и комментарии |
+| `crew` | Отправка отдельных отчётов Экипажа |
+| `head` | Просмотр отчётов Экипажа и комментарии к ним |
+| `staff`, `administrator`, `curator` | Новые экранные роли с функциональными профилями `service`, `admin`, `director` соответственно |
+
+Доступ к API проверяется на сервере по Bearer JWT и роли. Скрытая кнопка в UI не заменяет серверную проверку.
+
+## 2. Как работает система
+
+```text
+Browser
+  ├── GET page → FastAPI → Jinja2 HTML
+  ├── /static/* → CSS и vanilla JavaScript
+  └── /api/* + Authorization: Bearer JWT
+          ├── role/auth checks
+          ├── SQLite: users, addresses, reports, tasks, comments, history, settings
+          └── uploads/private-media roots: фото/видео → authenticated /api/media/{filename}
+```
+
+### Вход и аутентификация
+
+1. Браузер отправляет логин/пароль на `POST /api/login`.
+2. Сервер сверяет bcrypt-хэш, записывает авторизационную сессию в SQLite и возвращает JWT.
+3. Клиент хранит JWT в `localStorage` и передаёт его в `Authorization: Bearer …` для защищённых запросов.
+4. `POST /api/logout` помечает соответствующую сессию закрытой; общий клиентский обработчик очищает локальный токен даже при ошибке сети.
+
+JWT подписывается HS256. Секрет `JWT_SECRET` обязателен, должен быть случайным и длиной минимум 32 символа. Смена секрета делает ранее выданные JWT недействительными.
+
+### Мониторинг и задания
+
+- Страница получает справочники и ленту через REST API.
+- Отчёты, комментарии, задания и история хранятся в SQLite; файл вложения сохраняется отдельно в файловом хранилище. Без `PRIVATE_MEDIA_DIR` используется прежний локальный `UPLOADS_DIR`; при включённом `PRIVATE_MEDIA_DIR` новые вложения записываются в отдельный private root, а старые остаются в uploads. Оба варианта выдаются только через авторизованный endpoint Monitoring.
+- Для нового задания основной workflow использует `workflow_status`: `open`, `pending_review`, `completed`, `rework`, `closed`. История сохраняется в `task_status_history`.
+- Сохраняется legacy-поле `tasks.status` (`open`/`done`) для совместимости старых экранов. При изменениях обе модели надо проверять совместно.
+
+### Медиа и квоты
+
+Если обе службы работают на одном host, оператор может создать, например, `$ALBION_DATA_DIR/private/monitoring` вне `uploads/`, настроить отдельного Linux service user/group и смонтировать этот exact directory в Monitoring как `PRIVATE_MEDIA_DIR`. Не делайте mount на весь `ALBION_DATA_DIR` или Albion Files `uploads/`: его публичные физические/slug URLs не являются ACL. При Docker запуске нужно вручную добавить bind mount именно этой папки в Compose, например host-каталог `$ALBION_DATA_DIR/private/monitoring` → контейнерный `/private-media`, и задать `PRIVATE_MEDIA_DIR=/private-media`. Имеющиеся Compose mappings расходятся и автоматически не меняются этим параметром.
+
+- Фото валидируются Pillow, ограничиваются по пикселям, преобразуются/сжимаются в JPEG.
+- Видео читается чанками и атомарно публикуется во временный файл; допустимость определяется расширением, полного декодирования контейнера сейчас нет.
+- Встроенная настройка задаёт стартовые пределы: **10 MiB на фото**, **100 MiB на видео**. Администратор может менять отдельные лимиты; `0` снимает настраиваемый предел, но действует hard safety cap 100 MiB на файл.
+- Общая квота uploads по умолчанию равна `0` (не ограничена). Администратор может задать её в GiB. Использование считается сканированием обычных файлов в активном root и legacy `UPLOADS_DIR`; папки, symlink и незавершённые `.upload-*` исключаются. Снижение квоты не удаляет файлы, а блокирует новые загрузки, пока использование не станет ниже лимита.
+- Проверка и staging сериализуются Linux `flock`-файлом в активном каталоге загрузок. Для общей координации процессы должны видеть один и тот же локальный volume; блокировка не координирует разные серверы с разными дисками.
+- Для использования Albion Files задайте `PRIVATE_MEDIA_DIR` на отдельный каталог под его `ALBION_DATA_DIR`, строго вне публичного `uploads/`. Каталог должен быть доступен Monitoring по Linux service user/group и не должен попадать в индекс или публичные маршруты Albion Files. Это файловый mount, не HTTP API. Установка переменной не создаёт каталог/пользователя/права и при отсутствующем каталоге новые загрузки завершаются ошибкой; fallback в локальные uploads запрещён.
+- Прямой публичный static path `/uploads/...` удалён. Медиа выдаётся через `GET /api/media/{filename}` только с валидным Bearer JWT; UI загружает байты через `fetch` и использует Blob URL. Старые прямые/внешние ссылки на `/uploads` перестали работать.
+- Существует dry-run-first утилита `maintenance_cleanup.py`; она выявляет лишь неиспользуемые `temp_*` старше 7 суток. Удаление требует явного `--apply`, заданных `--db`/`--uploads` и успешного поиска ссылок в таблицах/JSON. Утилита не подключена к startup и никогда не удаляла production-файлы.
+
+## 3. Архитектура и стек
+
+Монолитный backend и серверный рендеринг; отдельного frontend build pipeline нет.
+
+| Компонент | Технология / назначение |
+|---|---|
+| Сервер | Python 3.11, FastAPI, Pydantic |
+| HTTP runtime | Uvicorn; для контейнера Gunicorn + Uvicorn workers |
+| UI | Jinja2 templates, vanilla JavaScript, CSS |
+| Хранилище состояния | SQLite через `sqlite3` |
+| Пароли / токены | bcrypt / PyJWT HS256 |
+| Фото | Pillow |
+| Excel | OpenPyXL |
+| Upload формы | `python-multipart` |
+| Медиа | локальный filesystem (`UPLOADS_DIR`) или optional private filesystem mount (`PRIVATE_MEDIA_DIR`) с API-аутентификацией |
+
+Основные файлы:
+
+- `app.py` — FastAPI app, endpoints, workflow, upload/media, settings и export.
+- `database.py` — SQLite connection helper, базовая схема и versioned additive migrations v1/v2, settings helpers.
+- `auth.py` — JWT, bcrypt, роли и проверки доступа.
+- `role_capabilities.py` — декларативные возможности новых role profiles.
+- `templates/` — страницы login/client/server/tasks/admin/director/crew/head и shared role page.
+- `static/` — страничный JS, общий `auth.js`, защищённая загрузка media в `media.js`, общие card models и дизайн-тема.
+- `tests/` — изолированные API/schema/cleanup regression tests.
+- `benchmarks/benchmark_feeds.py` — синтетические замеры SQL query count, времени ответа и payload size.
+
+## 4. Данные и схема
+
+SQLite содержит основные сущности:
+
+- пользователи и сессии (`users`, `auth_sessions`);
+- справочник адресов (`addresses`);
+- отчёты и media links (`reports`, `media`);
+- отдельные отчёты Экипажа и комментарии Руководителя (`crew_monitorings`, `crew_monitoring_media`, `crew_report_comments`, `crew_report_comment_media`);
+- задания, сообщения, директорские комментарии и история workflow (`tasks`, `comments`, `director_comments`, `task_status_history`);
+- key/value параметры приложения (`settings`).
+
+`database.py` выполняет миграции при импорте приложения. Version v1 добавляет поля workflow и необходимые comment/history tables, v2 — soft-hide/original filename columns и индексы. Миграции аддитивные: не удаляют/не пересоздают существующие строки. Они проверены на чистой и синтетической legacy SQLite в тестах, но **не прогонялись на рабочей БД**. Перед production rollout нужен backup и rehearsal на копии текущей базы.
+
+Параметры хранения задаются окружением:
+
+- `DB_PATH` — путь к SQLite-файлу (Compose local default `/data/monitoring.db`).
+- `UPLOADS_DIR` — путь к legacy/local медиа (Compose default `/uploads`).
+- `PRIVATE_MEDIA_DIR` — optional dedicated private media root для новых uploads; оставьте unset для прежнего поведения. В Compose нужно явно смонтировать эту папку и настроить Linux права; она должна быть вне публичного `albion-files/uploads/`.
+- `JWT_SECRET` — обязательный secret ключ.
+
+База и медиа должны быть на постоянном локальном диске и входить в план backup/restore. Текущий setup не предоставляет автоматического backup.
+
+## 5. API: группы endpoint-ов
+
+Полная текущая карта находится в OpenAPI FastAPI (`/docs` при работающем сервисе); далее группы по назначению:
+
+- **Auth/session:** `POST /api/login`, `POST /api/logout`, `GET /api/me`, публичный `GET /api/login-users`, admin `GET /api/auth-sessions`.
+- **Настройки/пользователи:** `GET /api/settings`, admin `PUT /api/settings`, admin batch `PUT /api/settings/quotas`, admin `GET/POST /api/users`, admin `PUT /api/users/{id}/password`.
+- **Справочники:** `GET /api/cities`, `/api/manufacturers`, `/api/addresses`.
+- **Фото/видео:** auth `POST /api/upload`, auth `GET /api/media/{filename}`.
+- **Мониторинг/команды:** reports, `/api/monitoring`, crew reports, head reports/comments, director feed/comments.
+- **Задачи:** create/list/update, media attach, `complete/approve/rework/close`, status history, hide/soft-delete, task comments.
+- **Сводные данные:** `GET /api/feed`, `GET /api/export/excel`, public liveness `GET /healthz`.
+
+Все медиа URL теперь требуют Bearer; ZIP API нет. Пользовательские пароли и password hashes не возвращаются API.
+
+## 6. Технические требования и sizing
+
+### ПО и инфраструктура
+
+**Поддерживаемый deployment pattern в репозитории:** Linux host + Docker Engine + Docker Compose v2. Dockerfile строится на `python:3.11-slim`; Compose публикует host port `18000` → container `8000`, использует Gunicorn с 4 Uvicorn workers и mount-ит persistent DB/uploads.
+
+Для запуска без Docker: Python 3.11, зависимости `requirements.txt`, затем Uvicorn/Gunicorn запуск из каталога `app/`. Тестовые зависимости — `requirements-dev.txt`.
+
+Production host должен иметь:
+
+- сильный `JWT_SECRET` (не использовать старые переменные `SECRET_KEY`/`DATABASE_URL` как эквиваленты без явного mapping);
+- Linux filesystem с persistent local storage, владельцем/правами, позволяющими приложению читать/писать каталоги DB/uploads;
+- firewall/reverse proxy и TLS. Не публиковать API наружу без HTTPS; текущая Compose port mapping слушает host interfaces, ограничьте доступ firewall/proxy;
+- Docker daemon enabled at boot, если ожидается автоматический запуск; `restart: unless-stopped` сам по себе не запускает Docker daemon;
+- регулярный backup SQLite **и** uploads и проверенный restore procedure.
+
+### Рекомендуемое железо (стартовая оценка)
+
+Уровень нагрузки в исходных данных не задан; расчёт ниже — стартовая рекомендация для маленькой внутренней команды, а не гарантия производительности.
+
+| Нагрузка | CPU | RAM | Диск |
+|---|---:|---:|---|
+| Небольшая команда, лёгкий чат/задачи | 2 vCPU | 4 GiB | SSD, ОС/контейнеры/БД + запас; объём uploads планировать отдельно |
+| Умеренная активность/больше одновременных запросов | 4 vCPU | 8 GiB | SSD/NVMe, измеряемый рост БД и медиа, резерв для backup |
+
+Почему приоритет **не объём видео-хранилища**: ключевой рабочий путь — лента, сообщения и workflow задач. В синтетическом TestClient benchmark на 200 rows каждого типа `/api/feed` выдал 1803 SQL statements, `/api/director/feed` — 402; медиа здесь не является главным bottleneck. Сначала лучше сократить N+1 и проверить write contention SQLite, затем подтвердить sizing нагрузочным тестом. Benchmark runs являются локальными синтетическими замерами, не производственным SLA.
+
+На CPU/RAM влияют число одновременных запросов и загрузка фото (ограниченный размер файла не равен точному RAM usage: Pillow декодирует изображение). Видеофайлы передаются чанками в staging, но показ видео сейчас получает Blob целиком и не использует Range streaming. При интенсивном видеопросмотре требуется проверить память браузера/server и рассмотреть range-capable streaming.
+
+### Производительность и масштабирование
+
+- SQLite — один локальный файл; конкурентные записи сериализуются. Четыре Gunicorn workers не означают четыре параллельных writers.
+- Для одной машины workers используют один локальный uploads volume; общий storage quota guard применяет `flock`. Для нескольких host replicas локальный `flock` не общий и SQLite-on-shared-network-storage не рекомендуется.
+- Для горизонтального роста потребуется вынести state DB в серверную СУБД и uploads в объектное/общедоступное private storage с контролируемой выдачей; это пока не часть архитектуры.
+- Не менять число workers/WAL/timeout наугад; сначала выполнить нагрузочные измерения representative message/task operations.
+
+## 7. Установка и запуск
+
+1. Подготовить `.env` из `.env.example`; сгенерировать секрет командой из файла и задать `JWT_SECRET` (≥32 символов).
+2. Проверить authoritative data roots. `app/docker-compose.yml` использует `../data` и `../uploads`; `docker-compose.prod.yml` исторически имеет разные volume mappings — перед использованием сверить/исправить оператором, не переключаться вслепую.
+3. На копии или новой пустой среде проверить schema migration и права на каталог.
+4. Из `/home/.../albion-monitoring/app` после backup:
+
+```bash
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 app
+```
+
+5. Проверить `/healthz`, страницу входа, тестовые роли, отправку сообщения, переход задания и защищённую загрузку media.
+
+Docker/Compose в текущей рабочей среде отсутствовали, поэтому container build/deploy не выполнялся. Настройка system autostart тоже не выполнялась.
+
+## 8. QA и эксплуатационные ограничения
+
+Регрессии запускаются на временных DB/uploads:
+
+```bash
+cd app
+uv run --with-requirements requirements-dev.txt python -m unittest discover -s tests -v
+uv run --with-requirements requirements-dev.txt python benchmarks/benchmark_feeds.py --sizes 10 50 200 --repeats 5
+```
+
+Для cleanup сначала только preview на копиях:
+
+```bash
+python maintenance_cleanup.py --db /path/to/db-copy.sqlite --uploads /path/to/uploads-copy
+```
+
+При наличии внешнего private root добавьте явный `--private-uploads /path/to/private-media`; удаление требует `--apply`. Не направлять CLI к рабочей базе/папке без backup и проверки вывода.
+
+Остались к отдельному проходу: полный browser workflow matrix по ролям, мобильный viewport, keyboard-only/accessibility, загрузочные fault-injection, видеодиагностика/range, load test SQLite/Gunicorn. Не запускать `init_db.py` на рабочей базе: скрипт также seed-ит аккаунты и импортирует адреса.

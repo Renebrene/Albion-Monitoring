@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from PIL import Image
 
-from database import get_db, init_schema, UPLOADS_DIR, get_setting, set_setting
+from database import get_db, init_schema, UPLOADS_DIR, PRIVATE_MEDIA_DIR, get_setting, set_setting
 from auth import (
     hash_password, verify_password, create_token,
     get_current_user, require_role, require_any, get_base_role,
@@ -60,13 +60,93 @@ PHOTO_UPLOAD_SETTING = "photo_max_upload_bytes"
 VIDEO_UPLOAD_SETTING = "video_max_upload_bytes"
 STORAGE_QUOTA_SETTING = "uploads_quota_bytes"
 MAX_CONFIGURED_QUOTA_BYTES = 10 * 1024**4  # 10 TiB
-QUOTA_LOCK_PATH = UPLOADS_DIR / ".quota.lock"
+MEDIA_PRIVATE_PREFIX = "pvt_"
+ACTIVE_MEDIA_DIR = PRIVATE_MEDIA_DIR or UPLOADS_DIR
+QUOTA_LOCK_PATH = ACTIVE_MEDIA_DIR / ".quota.lock"
+
+
+def media_root_for_key(filename: str) -> Path:
+    if filename.startswith(MEDIA_PRIVATE_PREFIX):
+        if PRIVATE_MEDIA_DIR is None:
+            raise HTTPException(status_code=503, detail="Внешнее хранилище медиа не настроено")
+        return PRIVATE_MEDIA_DIR
+    return UPLOADS_DIR
+
+
+def is_private_media_key(filename: str) -> bool:
+    return filename.startswith(MEDIA_PRIVATE_PREFIX)
+
+
+def is_temp_media_key(filename: str) -> bool:
+    return filename.startswith("temp_") or (is_private_media_key(filename) and filename[len(MEDIA_PRIVATE_PREFIX):].startswith("temp_"))
+
+
+def media_path_for_key(filename: str) -> Path:
+    if (
+        not filename
+        or Path(filename).name != filename
+        or "/" in filename
+        or "\\" in filename
+        or "\x00" in filename
+        or filename in {".", ".."}
+    ):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    root = media_root_for_key(filename)
+    if is_private_media_key(filename):
+        ensure_active_media_dir()
+    path = root / filename
+    try:
+        resolved = path.resolve(strict=True)
+        if path.is_symlink() or resolved.parent != root.resolve() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Файл не найден")
+    except (FileNotFoundError, OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    return resolved
+
+
+def media_filename(prefix: str, extension: str, *, private: bool | None = None) -> str:
+    use_private = PRIVATE_MEDIA_DIR is not None if private is None else private
+    key = f"{prefix}{uuid.uuid4().hex}{extension}"
+    return f"{MEDIA_PRIVATE_PREFIX}{key}" if use_private else key
+
+
+def media_filename_for_staged(staged: str, prefix: str, extension: str) -> str:
+    return media_filename(prefix, extension, private=is_private_media_key(staged))
+
+
+def ensure_active_media_dir() -> Path:
+    root = ACTIVE_MEDIA_DIR
+    if PRIVATE_MEDIA_DIR is None:
+        root.mkdir(parents=True, exist_ok=True)
+    elif not root.exists() or not root.is_dir() or root.is_symlink():
+        raise HTTPException(status_code=503, detail="Внешнее хранилище медиа недоступно")
+    if PRIVATE_MEDIA_DIR is not None:
+        try:
+            uploads_root = UPLOADS_DIR.resolve()
+            private_root = root.resolve(strict=True)
+            if (
+                private_root == uploads_root
+                or uploads_root in private_root.parents
+                or private_root in uploads_root.parents
+            ):
+                raise HTTPException(status_code=503, detail="Внешнее хранилище должно быть вне каталога локальных загрузок")
+        except (OSError, RuntimeError):
+            raise HTTPException(status_code=503, detail="Внешнее хранилище медиа недоступно")
+    return root
+
+
+def configured_media_roots() -> tuple[Path, ...]:
+    return (UPLOADS_DIR,) if PRIVATE_MEDIA_DIR is None else (UPLOADS_DIR, PRIVATE_MEDIA_DIR)
 
 
 @contextmanager
 def uploads_quota_lock_sync():
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(QUOTA_LOCK_PATH, "a+b") as lock_file:
+    ensure_active_media_dir()
+    try:
+        lock_file_context = open(QUOTA_LOCK_PATH, "a+b")
+    except OSError:
+        raise HTTPException(status_code=503, detail="Нет доступа к хранилищу медиа")
+    with lock_file_context as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -76,8 +156,11 @@ def uploads_quota_lock_sync():
 
 @asynccontextmanager
 async def uploads_quota_lock():
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    lock_file = open(QUOTA_LOCK_PATH, "a+b")
+    ensure_active_media_dir()
+    try:
+        lock_file = open(QUOTA_LOCK_PATH, "a+b")
+    except OSError:
+        raise HTTPException(status_code=503, detail="Нет доступа к хранилищу медиа")
     try:
         await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_EX)
         yield
@@ -88,16 +171,21 @@ async def uploads_quota_lock():
 
 def uploads_usage_bytes() -> int:
     total = 0
-    root = UPLOADS_DIR.resolve()
-    for path in UPLOADS_DIR.iterdir():
-        if path.name == QUOTA_LOCK_PATH.name or path.name.startswith(".upload-"):
+    if PRIVATE_MEDIA_DIR is not None:
+        ensure_active_media_dir()
+    for media_dir in configured_media_roots():
+        if not media_dir.exists() or not media_dir.is_dir() or media_dir.is_symlink():
             continue
-        try:
-            if path.is_symlink() or not path.is_file() or path.resolve().parent != root:
+        root = media_dir.resolve()
+        for path in media_dir.iterdir():
+            if path.name == ".quota.lock" or path.name.startswith(".upload-"):
                 continue
-            total += path.stat().st_size
-        except OSError:
-            continue
+            try:
+                if path.is_symlink() or not path.is_file() or path.resolve().parent != root:
+                    continue
+                total += path.stat().st_size
+            except OSError:
+                continue
     return total
 
 
@@ -162,15 +250,7 @@ def get_media(filename: str, request: Request):
     if extension not in ALLOWED_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=404, detail="Файл не найден")
 
-    root = UPLOADS_DIR.resolve()
-    path = UPLOADS_DIR / filename
-    try:
-        resolved = path.resolve(strict=True)
-    except (FileNotFoundError, OSError, RuntimeError):
-        raise HTTPException(status_code=404, detail="Файл не найден")
-
-    if resolved.parent != root or not resolved.is_file():
-        raise HTTPException(status_code=404, detail="Файл не найден")
+    resolved = media_path_for_key(filename)
 
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     safe_filename = filename.replace('"', "").replace("\\r", "").replace("\\n", "")
@@ -224,18 +304,29 @@ def validate_image_content(image_data: bytes, extension: str) -> None:
 
 
 def write_atomic_upload(content: bytes, extension: str) -> str:
-    filename = f"temp_{uuid.uuid4().hex}{extension}"
+    media_dir = ensure_active_media_dir()
+    filename = media_filename("temp_", extension)
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="wb", dir=UPLOADS_DIR, prefix=".upload-", delete=False
+            mode="wb", dir=media_dir, prefix=".upload-", delete=False
         ) as output:
             temp_path = Path(output.name)
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temp_path, UPLOADS_DIR / filename)
+        os.replace(temp_path, media_dir / filename)
         return filename
+    except HTTPException:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        raise
+    except OSError:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        if PRIVATE_MEDIA_DIR is not None:
+            raise HTTPException(status_code=503, detail="Нет доступа к внешнему хранилищу медиа")
+        raise
     except Exception:
         if temp_path:
             temp_path.unlink(missing_ok=True)
@@ -243,7 +334,8 @@ def write_atomic_upload(content: bytes, extension: str) -> str:
 
 
 async def stage_video_upload(file: UploadFile, limit: int, extension: str) -> str:
-    filename = f"temp_{uuid.uuid4().hex}{extension}"
+    media_dir = ensure_active_media_dir()
+    filename = media_filename("temp_", extension)
     temp_path = None
     total = 0
     try:
@@ -252,7 +344,7 @@ async def stage_video_upload(file: UploadFile, limit: int, extension: str) -> st
             quota = configured_storage_quota()
             usage = uploads_usage_bytes()
             with tempfile.NamedTemporaryFile(
-                mode="wb", dir=UPLOADS_DIR, prefix=".upload-", delete=False
+                mode="wb", dir=media_dir, prefix=".upload-", delete=False
             ) as output:
                 temp_path = Path(output.name)
                 while True:
@@ -269,8 +361,18 @@ async def stage_video_upload(file: UploadFile, limit: int, extension: str) -> st
                     raise HTTPException(status_code=400, detail="Файл пустой")
                 output.flush()
                 os.fsync(output.fileno())
-            os.replace(temp_path, UPLOADS_DIR / filename)
+            os.replace(temp_path, media_dir / filename)
         return filename
+    except HTTPException:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        raise
+    except OSError:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        if PRIVATE_MEDIA_DIR is not None:
+            raise HTTPException(status_code=503, detail="Нет доступа к внешнему хранилищу медиа")
+        raise
     except Exception:
         if temp_path:
             temp_path.unlink(missing_ok=True)
@@ -740,15 +842,15 @@ def create_report(data: ReportIn, request: Request):
                 if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
                     continue
 
-                old_path = UPLOADS_DIR / temp_name
+                old_path = media_path_for_key(temp_name)
                 if not old_path.exists():
                     continue
 
                 ext = old_path.suffix
                 # Определяем тип по расширению
                 media_type = "video" if ext in VIDEO_EXTENSIONS else "photo"
-                new_name = f"r{report_id}_{uuid.uuid4().hex[:8]}{ext}"
-                old_path.rename(UPLOADS_DIR / new_name)
+                new_name = media_filename_for_staged(temp_name, f"r{report_id}_", ext)
+                old_path.rename(media_root_for_key(new_name) / new_name)
 
                 conn.execute(
                     """
@@ -823,7 +925,7 @@ def create_crew_report(data: CrewReportIn, request: Request):
             if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
                 continue
 
-            old_path = UPLOADS_DIR / temp_name
+            old_path = media_path_for_key(temp_name)
 
             if not old_path.exists():
                 continue
@@ -837,9 +939,9 @@ def create_crew_report(data: CrewReportIn, request: Request):
             else:
                 continue
 
-            new_name = f"cr{report_id}_{uuid.uuid4().hex[:8]}{ext}"
+            new_name = media_filename_for_staged(temp_name, f"cr{report_id}_", ext)
 
-            old_path.rename(UPLOADS_DIR / new_name)
+            old_path.rename(media_root_for_key(new_name) / new_name)
 
             conn.execute(
                 """
@@ -1146,7 +1248,7 @@ def create_head_report_comment(
             if "/" in temp_name or "\\" in temp_name or ".." in temp_name:
                 continue
 
-            old_path = UPLOADS_DIR / temp_name
+            old_path = media_path_for_key(temp_name)
 
             if not old_path.exists():
                 continue
@@ -1160,8 +1262,8 @@ def create_head_report_comment(
             else:
                 continue
 
-            new_name = f"crc{comment_id}_{uuid.uuid4().hex[:8]}{ext}"
-            old_path.rename(UPLOADS_DIR / new_name)
+            new_name = media_filename_for_staged(temp_name, f"crc{comment_id}_", ext)
+            old_path.rename(media_root_for_key(new_name) / new_name)
 
             conn.execute(
                 """
@@ -1387,10 +1489,10 @@ async def add_task_media(
                 raise HTTPException(status_code=400, detail="Неверное имя файла")
 
             # Разрешаем только временные файлы, созданные /api/upload.
-            if not temp_name.startswith("temp_"):
+            if not is_temp_media_key(temp_name):
                 raise HTTPException(status_code=400, detail="Недопустимый файл")
 
-            temp_path = UPLOADS_DIR / temp_name
+            temp_path = media_path_for_key(temp_name)
 
             if not temp_path.exists() or not temp_path.is_file():
                 raise HTTPException(
@@ -1426,8 +1528,8 @@ async def add_task_media(
                     detail="Загрузка видео отключена администратором"
                 )
 
-            final_name = f"{prefix}{task_id}_{uuid.uuid4().hex}{ext}"
-            final_path = UPLOADS_DIR / final_name
+            final_name = media_filename_for_staged(temp_name, f"{prefix}{task_id}_", ext)
+            final_path = media_root_for_key(final_name) / final_name
 
             temp_path.replace(final_path)
 
@@ -2400,7 +2502,7 @@ def send_monitoring(data: ReportIn, request: Request):
                 ):
                     continue
 
-                old_path = UPLOADS_DIR / temp_name
+                old_path = media_path_for_key(temp_name)
 
                 if not old_path.exists():
                     continue
@@ -2413,13 +2515,9 @@ def send_monitoring(data: ReportIn, request: Request):
                     else "photo"
                 )
 
-                new_name = (
-                    f"m{report_id}_"
-                    f"{uuid.uuid4().hex[:8]}"
-                    f"{ext}"
-                )
+                new_name = media_filename_for_staged(temp_name, f"m{report_id}_", ext)
 
-                new_path = UPLOADS_DIR / new_name
+                new_path = media_root_for_key(new_name) / new_name
 
                 old_path.rename(new_path)
 

@@ -13,6 +13,9 @@ services:
       # Данные вне контейнера — не пропадут при пересборке
       - ../data:/data
       - ../uploads:/uploads
+      # Опционально: добавить отдельный read-write bind mount для PRIVATE_MEDIA_DIR,
+      # но только для каталога вне публичного Albion Files uploads/ и после
+      # ручной настройки минимальных прав Linux service user/group.
     ports:
       - "18000:8000"
     healthcheck:

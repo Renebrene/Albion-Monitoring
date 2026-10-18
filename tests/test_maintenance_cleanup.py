@@ -88,6 +88,34 @@ class CleanupTests(unittest.TestCase):
             cleanup_candidates(self.db, self.uploads, older_than_days=7, now=self.now)
         self.assertTrue(stale.exists())
 
+    def test_optional_private_root_candidates_and_apply(self):
+        private = self.root / "private-media"
+        private.mkdir()
+        old_private = private / "temp_private.jpg"
+        old_private.write_bytes(b"private")
+        stamp = self.now - 9 * 86400
+        import os
+        os.utime(old_private, (stamp, stamp))
+
+        candidates = cleanup_candidates(
+            self.db,
+            self.uploads,
+            private_uploads_dir=private,
+            older_than_days=7,
+            now=self.now,
+        )
+        self.assertEqual([candidate["path"] for candidate in candidates], [old_private])
+        removed = apply_cleanup(
+            self.db,
+            self.uploads,
+            candidates,
+            private_uploads_dir=private,
+            older_than_days=7,
+            now=self.now,
+        )
+        self.assertEqual(removed, [old_private.name])
+        self.assertFalse(old_private.exists())
+
     def test_cutoff_is_strictly_older_than_seven_days(self):
         boundary = self._touch("temp_boundary.jpg", 7)
         stale = self._touch("temp_older.jpg", 8)

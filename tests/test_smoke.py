@@ -11,6 +11,7 @@ from pathlib import Path
 TEST_ROOT = Path(tempfile.mkdtemp(prefix="albion-tests-"))
 os.environ["DB_PATH"] = str(TEST_ROOT / "test.db")
 os.environ["UPLOADS_DIR"] = str(TEST_ROOT / "uploads")
+os.environ.pop("PRIVATE_MEDIA_DIR", None)
 os.environ["JWT_SECRET"] = "unit-test-only-random-secret-0123456789abcdef"
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -437,6 +438,129 @@ class ApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         after = {path.name for path in (TEST_ROOT / "uploads").iterdir()}
         self.assertEqual(after, before)
+
+    def test_private_media_root_upload_and_authenticated_read(self):
+        import app as app_module
+        from io import BytesIO
+        from PIL import Image
+
+        private_root = TEST_ROOT / "private-media"
+        private_root.mkdir(exist_ok=True)
+        old_values = (
+            app_module.PRIVATE_MEDIA_DIR,
+            app_module.ACTIVE_MEDIA_DIR,
+            app_module.QUOTA_LOCK_PATH,
+        )
+        app_module.PRIVATE_MEDIA_DIR = private_root
+        app_module.ACTIVE_MEDIA_DIR = private_root
+        app_module.QUOTA_LOCK_PATH = private_root / ".quota.lock"
+        try:
+            data = BytesIO()
+            Image.new("RGB", (4, 4), "cyan").save(data, format="JPEG")
+            upload = self.client.post(
+                "/api/upload",
+                files={"file": ("private.jpg", data.getvalue(), "image/jpeg")},
+                headers=self.headers,
+            )
+            self.assertEqual(upload.status_code, 200)
+            filename = upload.json()["filename"]
+            self.assertTrue(filename.startswith("pvt_temp_"))
+            self.assertTrue((private_root / filename).is_file())
+            self.assertFalse((TEST_ROOT / "uploads" / filename).exists())
+
+            legacy_local = TEST_ROOT / "uploads" / "legacy-local.jpg"
+            legacy_local.write_bytes(bytes((0xFF, 0xD8, 0xFF)))
+            legacy_response = self.client.get("/api/media/legacy-local.jpg", headers=self.headers)
+            self.assertEqual(legacy_response.status_code, 200)
+
+            symlink = private_root / "pvt_symlink.jpg"
+            try:
+                symlink.symlink_to(legacy_local)
+            except OSError:
+                symlink = None
+            if symlink is not None:
+                self.assertEqual(self.client.get(f"/api/media/{symlink.name}", headers=self.headers).status_code, 404)
+
+            with get_db() as conn:
+                conn.execute(
+                    "INSERT INTO addresses (id, city, address_name, manufacturer) VALUES (10, 'City', 'Private address', 'Maker')"
+                )
+            attached = self.client.post(
+                "/api/reports",
+                json={"address_id": 10, "text": "private attachment", "media": [{"filename": filename, "original_filename": "private.jpg"}]},
+                headers=self.headers,
+            )
+            self.assertEqual(attached.status_code, 200)
+            with get_db() as conn:
+                row = conn.execute("SELECT filename FROM media WHERE report_id = ?", (attached.json()["report_id"],)).fetchone()
+            self.assertTrue(row["filename"].startswith("pvt_r"))
+            self.assertTrue((private_root / row["filename"]).is_file())
+
+            final_media = self.client.get(f"/api/media/{row['filename']}", headers=self.headers)
+            self.assertEqual(final_media.status_code, 200)
+            self.assertTrue(final_media.content.startswith(bytes((0xFF, 0xD8))))
+            self.assertEqual(self.client.get(f"/api/media/{row['filename']}").status_code, 401)
+        finally:
+            (
+                app_module.PRIVATE_MEDIA_DIR,
+                app_module.ACTIVE_MEDIA_DIR,
+                app_module.QUOTA_LOCK_PATH,
+            ) = old_values
+
+    def test_private_media_root_nested_inside_uploads_is_rejected(self):
+        import app as app_module
+        private_root = TEST_ROOT / "uploads" / "nested-private"
+        private_root.mkdir(exist_ok=True)
+        old_values = (
+            app_module.PRIVATE_MEDIA_DIR,
+            app_module.ACTIVE_MEDIA_DIR,
+            app_module.QUOTA_LOCK_PATH,
+        )
+        app_module.PRIVATE_MEDIA_DIR = private_root
+        app_module.ACTIVE_MEDIA_DIR = private_root
+        app_module.QUOTA_LOCK_PATH = private_root / ".quota.lock"
+        try:
+            with self.assertRaises(Exception) as raised:
+                app_module.ensure_active_media_dir()
+            self.assertEqual(getattr(raised.exception, "status_code", None), 503)
+        finally:
+            (
+                app_module.PRIVATE_MEDIA_DIR,
+                app_module.ACTIVE_MEDIA_DIR,
+                app_module.QUOTA_LOCK_PATH,
+            ) = old_values
+
+    def test_private_media_root_missing_fails_closed_without_legacy_fallback(self):
+        import app as app_module
+        from io import BytesIO
+        from PIL import Image
+
+        absent_root = TEST_ROOT / "not-mounted"
+        old_values = (
+            app_module.PRIVATE_MEDIA_DIR,
+            app_module.ACTIVE_MEDIA_DIR,
+            app_module.QUOTA_LOCK_PATH,
+        )
+        app_module.PRIVATE_MEDIA_DIR = absent_root
+        app_module.ACTIVE_MEDIA_DIR = absent_root
+        app_module.QUOTA_LOCK_PATH = absent_root / ".quota.lock"
+        try:
+            data = BytesIO()
+            Image.new("RGB", (4, 4), "yellow").save(data, format="JPEG")
+            response = self.client.post(
+                "/api/upload",
+                files={"file": ("missing-mount.jpg", data.getvalue(), "image/jpeg")},
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(list((TEST_ROOT / "uploads").glob("pvt_*")), [])
+            self.assertFalse(absent_root.exists())
+        finally:
+            (
+                app_module.PRIVATE_MEDIA_DIR,
+                app_module.ACTIVE_MEDIA_DIR,
+                app_module.QUOTA_LOCK_PATH,
+            ) = old_values
 
     def test_media_requires_auth_and_is_not_public_static(self):
         self.assertEqual(self.client.get("/api/media/media.jpg").status_code, 401)

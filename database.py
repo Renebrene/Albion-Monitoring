@@ -5,6 +5,11 @@ import os
 
 DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent.parent / "data" / "monitoring.db"))
 UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", Path(__file__).parent.parent / "uploads"))
+PRIVATE_MEDIA_DIR = (
+    Path(os.environ["PRIVATE_MEDIA_DIR"])
+    if os.environ.get("PRIVATE_MEDIA_DIR", "").strip()
+    else None
+)
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
