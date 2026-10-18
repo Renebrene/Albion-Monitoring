@@ -6,8 +6,10 @@ import bcrypt
 import jwt
 from fastapi import HTTPException, Request, status
 
-# Секретный ключ для подписи JWT (берём из ENV, иначе дефолт)
-SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-production-abc123xyz")
+# JWT signing must use an explicit deployment secret; never fall back to a known key.
+SECRET = os.environ.get("JWT_SECRET", "").strip()
+if len(SECRET) < 32:
+    raise RuntimeError("JWT_SECRET must be set to a random value of at least 32 characters")
 ALGORITHM = "HS256"
 TOKEN_HOURS = 24 * 7  # токен живёт 7 дней
 

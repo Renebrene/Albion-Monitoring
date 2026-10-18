@@ -25,14 +25,171 @@ def get_db():
         conn.close()
 
 
+def _table_columns(conn, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _add_column_if_missing(conn, table: str, column: str, definition: str) -> bool:
+    if column in _table_columns(conn, table):
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    return True
+
+
+def _migration_1_workflow_and_comments(conn):
+    """Add the workflow/comment schema missing from legacy installs; additive only."""
+    workflow_status_added = _add_column_if_missing(
+        conn, "tasks", "workflow_status",
+        "TEXT NOT NULL DEFAULT 'open' CHECK(workflow_status IN ('open','pending_review','completed','rework','closed'))",
+    )
+    _add_column_if_missing(conn, "tasks", "created_by_role", "TEXT")
+    _add_column_if_missing(conn, "tasks", "is_important", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "tasks", "close_reason", "TEXT")
+    if workflow_status_added:
+        conn.execute(
+            "UPDATE tasks SET workflow_status = CASE WHEN status = 'done' THEN 'completed' ELSE 'open' END"
+        )
+    else:
+        conn.execute(
+            "UPDATE tasks SET workflow_status = CASE WHEN status = 'done' THEN 'completed' ELSE 'open' END "
+            "WHERE workflow_status IS NULL OR workflow_status = ''"
+        )
+    conn.execute(
+        "UPDATE tasks SET created_by_role = (SELECT role FROM users WHERE users.id = tasks.created_by) "
+        "WHERE created_by_role IS NULL OR created_by_role = ''"
+    )
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            text TEXT NOT NULL,
+            media_json TEXT,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS director_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_type TEXT NOT NULL CHECK(item_type IN ('task','monitoring')),
+            item_id INTEGER NOT NULL,
+            report_id INTEGER REFERENCES reports(id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            text TEXT NOT NULL,
+            media_json TEXT,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS task_status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            status TEXT NOT NULL,
+            changed_by INTEGER NOT NULL REFERENCES users(id),
+            changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            comment TEXT
+        )
+    """)
+
+    # Upgrade older partial versions of these tables without rebuilding or deleting rows.
+    for column, definition in (
+        ("task_id", "INTEGER REFERENCES tasks(id)"),
+        ("user_id", "INTEGER REFERENCES users(id)"),
+        ("text", "TEXT NOT NULL DEFAULT ''"),
+        ("media_json", "TEXT"),
+        ("created_at", "DATETIME"),
+    ):
+        _add_column_if_missing(conn, "comments", column, definition)
+    for column, definition in (
+        ("item_type", "TEXT"),
+        ("item_id", "INTEGER"),
+        ("user_id", "INTEGER REFERENCES users(id)"),
+        ("text", "TEXT NOT NULL DEFAULT ''"),
+        ("media_json", "TEXT"),
+        ("created_at", "DATETIME"),
+        ("report_id", "INTEGER REFERENCES reports(id)"),
+    ):
+        _add_column_if_missing(conn, "director_comments", column, definition)
+    for column, definition in (
+        ("task_id", "INTEGER REFERENCES tasks(id)"),
+        ("status", "TEXT NOT NULL DEFAULT 'open'"),
+        ("changed_by", "INTEGER REFERENCES users(id)"),
+        ("changed_at", "DATETIME"),
+        ("comment", "TEXT"),
+    ):
+        _add_column_if_missing(conn, "task_status_history", column, definition)
+
+    conn.execute("UPDATE comments SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+    conn.execute("UPDATE director_comments SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+    conn.execute("UPDATE task_status_history SET changed_at = CURRENT_TIMESTAMP WHERE changed_at IS NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_task_created ON comments(task_id, created_at, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_director_comments_item ON director_comments(item_type, item_id, created_at, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dc_report ON director_comments(report_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_history_task_changed ON task_status_history(task_id, changed_at, id)")
+
+
+def _migration_2_soft_hide_and_original_filenames(conn):
+    for table in ("tasks", "reports", "crew_monitorings"):
+        _add_column_if_missing(conn, table, "hidden", "INTEGER NOT NULL DEFAULT 0")
+
+    for table in ("media", "crew_monitoring_media", "crew_report_comment_media"):
+        _add_column_if_missing(conn, table, "original_filename", "TEXT")
+
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_reports_address ON reports(address_id)",
+        "CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_reports_task ON reports(task_id)",
+        "CREATE INDEX IF NOT EXISTS idx_media_report ON media(report_id)",
+        "CREATE INDEX IF NOT EXISTS idx_media_task ON media(task_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_addresses_city ON addresses(city)",
+        "CREATE INDEX IF NOT EXISTS idx_addresses_manufacturer ON addresses(manufacturer)",
+    ):
+        conn.execute(index_sql)
+
+
+def _apply_schema_migrations(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    migrations = (
+        (1, "workflow_and_comments", _migration_1_workflow_and_comments),
+        (2, "soft_hide_and_original_filenames", _migration_2_soft_hide_and_original_filenames),
+    )
+    for version, name, migration in migrations:
+        applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+        ).fetchone()
+        if applied:
+            continue
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            migration(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations(version, name) VALUES (?, ?)",
+                (version, name),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def init_schema():
+
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 login TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','service','director')),
+                role TEXT NOT NULL CHECK(role IN ('admin','service','director','crew','head','staff','administrator','curator')),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -170,75 +327,15 @@ def init_schema():
             CREATE INDEX IF NOT EXISTS idx_addresses_manufacturer ON addresses(manufacturer);
         """)
 
-        # Soft-hide для заданий, мониторингов и отчётов экипажа.
-        # Записи не удаляются физически и сохраняют всю историю/медиа.
-        for table in ("tasks", "reports", "crew_monitorings"):
-            columns = {
-                row["name"]
-                for row in conn.execute(
-                    f"PRAGMA table_info({table})"
-                ).fetchall()
-            }
-            if "hidden" not in columns:
-                conn.execute(
-                    f"ALTER TABLE {table} "
-                    "ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
-                )
-
-        # Исходные имена загруженных файлов.
-        # Старые записи остаются без имени, новые получают его при загрузке.
-        for table in (
-            "media",
-            "crew_monitoring_media",
-            "crew_report_comment_media",
-        ):
-            columns = {
-                row["name"]
-                for row in conn.execute(
-                    f"PRAGMA table_info({table})"
-                ).fetchall()
-            }
-            if "original_filename" not in columns:
-                conn.execute(
-                    f"ALTER TABLE {table} "
-                    "ADD COLUMN original_filename TEXT"
-                )
-
-        # Медиа в комментариях директора/админа.
-        # Таблица director_comments могла быть создана предыдущей
-        # версией приложения, поэтому мигрируем безопасно.
-        try:
-            columns = {
-                row["name"]
-                for row in conn.execute(
-                    "PRAGMA table_info(director_comments)"
-                ).fetchall()
-            }
-            if "media_json" not in columns:
-                conn.execute(
-                    "ALTER TABLE director_comments "
-                    "ADD COLUMN media_json TEXT"
-                )
-
-            if "report_id" not in columns:
-                conn.execute(
-                    "ALTER TABLE director_comments "
-                    "ADD COLUMN report_id INTEGER REFERENCES reports(id)"
-                )
-
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_dc_report "
-                "ON director_comments(report_id)"
-            )
-        except Exception:
-            # Если таблицы ещё нет в конкретной старой базе,
-            # ничего не ломаем — существующая логика останется.
-            pass
+        _apply_schema_migrations(conn)
 
         # Настройки по умолчанию (только если таблица пустая)
         defaults = {
             "photos_enabled": "1",
             "videos_enabled": "1",
+            "photo_max_upload_bytes": str(10 * 1024 * 1024),
+            "video_max_upload_bytes": str(100 * 1024 * 1024),
+            "uploads_quota_bytes": "0",
         }
         for key, value in defaults.items():
             conn.execute(

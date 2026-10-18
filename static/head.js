@@ -658,10 +658,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("logout");
 
   if (logout) {
-    logout.addEventListener("click", () => {
-      localStorage.clear();
-      location.href = "/";
-    });
+    logout.addEventListener("click", () => logoutCurrentSession("/"));
   }
 
   await loadReports();

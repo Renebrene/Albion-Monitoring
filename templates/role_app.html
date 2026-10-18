@@ -6,7 +6,7 @@
           content="width=device-width, initial-scale=1, maximum-scale=1">
     <title>АЛЬБИОН. Мониторинг экранов</title>
 
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=role-theme-3">
     <style>
         .role-app {
             min-height: 100vh;
@@ -1364,10 +1364,11 @@
   }
 }
 </style>
+<link rel="stylesheet" href="/static/role-theme.css?v=5">
 
 </head>
 
-<body>
+<body class="role-app-page">
 
 <div class="role-app">
 
@@ -1387,8 +1388,6 @@
                 type="button"
                 class="add-task-btn"
                 style="
-                    background:#ef4444;
-                    color:#fff;
                     border:none;
                     padding:10px 20px;
                     border-radius:10px;
@@ -1398,7 +1397,6 @@
                     align-items:center;
                     gap:8px;
                     font-size:14px;
-                    box-shadow:0 2px 8px rgba(239,68,68,.4);
                 "
                 onclick="openMonitoringForm()"
             >
@@ -1409,7 +1407,7 @@
             <button
                 type="button"
                 class="btn ghost"
-                onclick="window.location.href='/login'"
+                onclick="logoutCurrentSession('/login')"
             >
                 Выйти
             </button>
@@ -1719,6 +1717,8 @@
 
 </div>
 
+<script src="/static/auth.js?v=1"></script>
+<script src="/static/media.js?v=1"></script>
 <script src="/static/common_cards.js"></script>
 <script src="/static/role_app.js"></script>
 

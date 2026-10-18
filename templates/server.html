@@ -35,7 +35,10 @@
 </div>
 
 <div class="toast" id="toast"></div>
-<script src="/static/server.js">
+<script src="/static/auth.js?v=1"></script>
+<script src="/static/media.js?v=1"></script>
+<script src="/static/server.js?v=115"></script>
+<script>
 async function goHome(){
   const token = localStorage.getItem('token');
   let role = 'service';

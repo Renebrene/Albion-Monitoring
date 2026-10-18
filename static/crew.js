@@ -741,10 +741,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   if (logoutButton) {
-    logoutButton.addEventListener("click", () => {
-      localStorage.clear();
-      location.href = "/";
-    });
+    logoutButton.addEventListener("click", () => logoutCurrentSession("/"));
   }
 
   await loadCrewAddresses();

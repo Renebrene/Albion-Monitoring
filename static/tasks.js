@@ -537,10 +537,7 @@ document.getElementById("statusFilter").addEventListener("click", e => {
   
 
 // Обработчик кнопки "Выйти"
-document.getElementById("logout").onclick = () => { 
-  localStorage.clear(); 
-  location.href = "/"; 
-};
+document.getElementById("logout").onclick = () => logoutCurrentSession("/");
 
   loadTasks();
 })();

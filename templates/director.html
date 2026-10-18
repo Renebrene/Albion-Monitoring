@@ -9,7 +9,7 @@
 
   <title>Albion — Директор</title>
 
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=role-theme-3">
 
   <style>
     body {
@@ -32,8 +32,8 @@
       gap: 12px;
       margin: -12px -12px 12px;
       padding: 10px 14px;
-      background: #111827;
-      color: #fff;
+      background: var(--header-bg);
+      color: var(--header-text);
       min-height: 54px;
       box-sizing: border-box;
     }
@@ -65,28 +65,29 @@
     }
 
     .director-actions .btn.ghost {
-      color: #fff;
-      border-color: rgba(255,255,255,0.35);
+      color: var(--primary);
+      border-color: var(--border);
       background: transparent;
     }
 
     .director-actions .btn.ghost:hover {
-      background: rgba(255,255,255,0.1);
+      background: var(--surface-muted);
     }
 
     .give-task-btn {
       border: 0;
       border-radius: 9px;
       padding: 9px 14px;
-      background: #2563eb;
-      color: white;
+      background: var(--primary);
+      color: #fff;
+      font-family: var(--font-ui);
       font-weight: 700;
       cursor: pointer;
       white-space: nowrap;
     }
 
     .give-task-btn:hover {
-      background: #1d4ed8;
+      background: var(--primary-hover);
     }
 
     .feed-search-wrap {
@@ -1257,9 +1258,10 @@
 }
 </style>
 </style>
+<link rel="stylesheet" href="/static/role-theme.css?v=5">
 </head>
 
-<body>
+<body class="director-page-root">
 
 <div class="director-page">
 
@@ -1806,7 +1808,9 @@
 }
 
 </style>
-<script src="/static/director.js?v=111"></script>
+<script src="/static/auth.js?v=1"></script>
+<script src="/static/media.js?v=1"></script>
+<script src="/static/director.js?v=112"></script>
 
 </body>
 </html>

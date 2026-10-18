@@ -280,11 +280,11 @@ const renderFeed = (items) => {
 
               const isImage =
                 mediaType === "photo" ||
-                /\\.(jpg|jpeg|png|webp|gif)$/i.test(name);
+                /\.(jpg|jpeg|png|webp|gif)$/i.test(name);
 
               const isVideo =
                 mediaType === "video" ||
-                /\\.(mp4|mov|webm|m4v)$/i.test(name);
+                /\.(mp4|mov|webm|m4v)$/i.test(name);
 
               if (isImage) {
                 return `
@@ -569,7 +569,7 @@ const renderFeed = (items) => {
 
                   const isVideo =
                     type === "video" ||
-                    /\\.(mp4|mov|webm|m4v)$/i.test(url);
+                    /\.(mp4|mov|webm|m4v)$/i.test(url);
 
                   return isVideo
                     ? `
@@ -703,7 +703,7 @@ const renderFeed = (items) => {
                         const url = name.startsWith("/uploads/")
                           ? name
                           : `/uploads/${encodeURIComponent(name)}`;
-                        const isVideo = /\\.(mp4|mov|webm|m4v)$/i.test(name);
+                        const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(name);
 
                         return `
                           <div class="client-comment-attachment">
@@ -1739,7 +1739,7 @@ window.deleteTask = async (id) => {
 
   document.getElementById("filterCity").addEventListener("change", applyFilters);
   document.getElementById("filterSearch").addEventListener("input", applyFilters);
-  document.getElementById("logout").onclick = () => { localStorage.clear(); location.href = "/"; };
+  document.getElementById("logout").onclick = () => logoutCurrentSession("/");
   
   loadFeed();
 })();

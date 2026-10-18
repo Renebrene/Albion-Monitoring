@@ -69,7 +69,7 @@ function renderMonitoringMedia(media) {
           ? name
           : `/uploads/${encodeURIComponent(name)}`;
 
-        const isVideo = /\\.(mp4|mov|webm|m4v)$/i.test(name);
+        const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(name);
 
         return `
           <div class="comment-attachment">
@@ -1934,15 +1934,4 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 
 // Выход из системы
-document.getElementById("logout").onclick = async () => {
-  try {
-    await API("/api/logout", {
-      method: "POST"
-    });
-  } catch(error) {
-    console.error("Ошибка выхода:", error);
-  }
-
-  localStorage.clear();
-  location.href = "/";
-};
+document.getElementById("logout").onclick = () => logoutCurrentSession("/");

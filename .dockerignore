@@ -1,0 +1,35 @@
+# Secrets and repository metadata
+.env
+.git
+.gitignore
+
+# Runtime data and database backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+*.before-*
+*.before_*
+../data
+../uploads
+data/
+uploads/
+
+# Local archives and binaries
+*.tar
+*.tar.gz
+*.zip
+clo
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Temporary development scripts
+apply_frontend_workflow.py
+apply_workflow_backend.py
+create_admin_page.py
+update_controls.py

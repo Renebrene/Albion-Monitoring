@@ -1,0 +1,189 @@
+/* Shared visual language for role-specific pages. Keep workflow/status colors local. */
+.crew-page,
+.head-page,
+.admin-page,
+.director-page-root,
+.role-app-page {
+  --bg: #f5f7fa;
+  --card: #ffffff;
+  --ink: #111827;
+  --muted: #6b7280;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --blue: #2563eb;
+  --blue-dark: #1d4ed8;
+  --border: #e5e7eb;
+  --ui-border: #e5e7eb;
+  --surface-muted: #f5f7fa;
+  --white: #ffffff;
+  --danger: #dc2626;
+  --header-bg: #ffffff;
+  --header-text: #111827;
+  --icon-accent: #2563eb;
+  font-family: var(--font-ui);
+  color: var(--ink);
+}
+
+.crew-page,
+.crew-page *,
+.head-page,
+.head-page *,
+.admin-page,
+.admin-page *,
+.director-page-root,
+.director-page-root *,
+.role-app-page,
+.role-app-page * {
+  font-family: var(--font-ui) !important;
+}
+
+.crew-page .topbar,
+.head-page .topbar,
+.admin-page .director-header,
+.director-page-root .director-header,
+.role-app .topbar {
+  color: var(--header-text) !important;
+  background: var(--header-bg) !important;
+  border-bottom: 1px solid var(--ui-border) !important;
+}
+
+.crew-page .brand-title,
+.head-page .brand-title,
+.admin-page .director-title,
+.director-page-root .director-title,
+.role-app .topbar h1 {
+  color: var(--header-text);
+  font-family: var(--font-ui);
+}
+
+.crew-page .brand-subtitle,
+.head-page .brand-subtitle,
+.role-app .role-app-role {
+  color: var(--text-muted);
+}
+
+.crew-page .brand img,
+.head-page .brand img,
+.role-app .topbar img {
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.crew-page .logout-btn,
+.head-page .logout-btn {
+  color: var(--primary);
+  border-color: var(--primary);
+  font-family: var(--font-ui);
+}
+
+.crew-page .media-button-icon,
+.head-page .media-button-icon,
+.crew-page .icon,
+.head-page .icon,
+.admin-page .director-actions .btn,
+.director-page-root .director-actions .btn,
+.role-app .topbar button {
+  font-family: var(--font-ui);
+}
+
+.crew-page button,
+.crew-page input,
+.crew-page textarea,
+.head-page button,
+.head-page input,
+.head-page textarea,
+.admin-page button,
+.admin-page input,
+.admin-page textarea,
+.director-page-root button,
+.director-page-root input,
+.director-page-root textarea,
+.role-app button,
+.role-app input,
+.role-app textarea,
+.role-app select {
+  font-family: var(--font-ui);
+}
+
+.crew-page .media-button-icon,
+.head-page .media-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--icon-accent);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.role-app .add-task-btn {
+  background: var(--primary) !important;
+  box-shadow: 0 2px 8px rgb(37 99 235 / 20%) !important;
+}
+
+.admin-page .director-actions .btn.ghost,
+.director-page-root .director-actions .btn.ghost {
+  color: var(--primary);
+  border-color: var(--ui-border);
+}
+
+.admin-page .give-task-btn,
+.director-page-root .give-task-btn {
+  background: var(--primary);
+  color: #fff;
+  font-family: var(--font-ui);
+}
+
+.admin-page .give-task-btn:hover,
+.director-page-root .give-task-btn:hover {
+  background: var(--primary-hover);
+}
+
+.admin-page .director-header .director-title::before,
+.director-page-root .director-header .director-title::before {
+  background-image: url("/static/logo.png");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+
+.role-app .topbar h1 img {
+  width: 32px;
+  height: 32px;
+}
+
+.role-app .topbar .btn.ghost {
+  color: var(--primary);
+  border-color: var(--ui-border);
+}
+
+.crew-page .brand-title,
+.head-page .brand-title,
+.role-app-page .brand-title,
+.role-app .role-app-title,
+.admin-page .director-title,
+.director-page-root .director-title {
+  font-size: var(--text-title);
+  font-weight: var(--weight-bold);
+  line-height: var(--line-tight);
+}
+
+.crew-page .brand-subtitle,
+.head-page .brand-subtitle,
+.role-app-page .role-app-role,
+.role-app .role-app-role {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+@media (max-width: 600px) {
+  .crew-page .topbar,
+  .head-page .topbar,
+  .admin-page .director-header,
+  .director-page-root .director-header,
+  .role-app .topbar {
+    color: var(--header-text);
+  }
+}

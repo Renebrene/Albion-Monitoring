@@ -58,13 +58,47 @@ window.loadReports = async () => {
   render(rows);
 };
 
-window.exportExcel = () => {
-  const f = document.getElementById("fFrom").value;
-  const t = document.getElementById("fTo").value;
+window.exportExcel = async () => {
   const params = new URLSearchParams();
-  if(f) params.set("date_from", f);
-  if(t) params.set("date_to", t);
-  window.location.href = "/api/export/excel?" + params.toString();
+  const filters = {
+    city: document.getElementById("fCity").value,
+    manufacturer: document.getElementById("fManuf").value,
+    date_from: document.getElementById("fFrom").value,
+    date_to: document.getElementById("fTo").value,
+  };
+  Object.entries(filters).forEach(([key, value]) => {
+    if(value) params.set(key, value);
+  });
+
+  const button = document.querySelector('.btn.secondary[onclick="exportExcel()"]');
+  if(button) button.disabled = true;
+
+  try {
+    const response = await fetch("/api/export/excel?" + params.toString(), {
+      headers: authHeaders(),
+    });
+    if(!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || `Ошибка экспорта (${response.status})`);
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filename = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i)?.[1]
+      || "albion.xlsx";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = decodeURIComponent(filename.replace(/\"/g, ""));
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(error) {
+    toast(error.message || "Не удалось выгрузить Excel", true);
+  } finally {
+    if(button) button.disabled = false;
+  }
 };
 
 (async () => {
@@ -88,6 +122,6 @@ window.exportExcel = () => {
     loadReports();
   });
 
-  document.getElementById("logout").onclick = () => { localStorage.clear(); location.href="/"; };
+  document.getElementById("logout").onclick = () => logoutCurrentSession("/");
   loadReports();
 })();

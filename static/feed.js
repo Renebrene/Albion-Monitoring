@@ -1048,7 +1048,7 @@ window.deleteTask = async (id) => {
 
   document.getElementById("filterCity").addEventListener("change", applyFilters);
   document.getElementById("filterSearch").addEventListener("input", applyFilters);
-  document.getElementById("logout").onclick = () => { localStorage.clear(); location.href = "/"; };
+  document.getElementById("logout").onclick = () => logoutCurrentSession("/");
   
   loadFeed();
 })();

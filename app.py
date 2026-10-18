@@ -2,7 +2,13 @@
 АЛЬБИОН. Мониторинг экранов
 Главный сервер FastAPI
 """
+import asyncio
+import fcntl
+import mimetypes
+from contextlib import asynccontextmanager, contextmanager
 import os
+import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +16,7 @@ from typing import Optional, List
 from io import BytesIO
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -19,7 +25,7 @@ from PIL import Image
 from database import get_db, init_schema, UPLOADS_DIR, get_setting, set_setting
 from auth import (
     hash_password, verify_password, create_token,
-    get_current_user, require_role, require_any,
+    get_current_user, require_role, require_any, get_base_role,
     ROLE_LABELS, ROLE_HOME,
 )
 
@@ -32,22 +38,245 @@ STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # ---------- Ограничения для медиа ----------
 # Фото
-PHOTO_MAX_SIZE = 5 * 1024 * 1024           # 5 МБ (исходный)
-PHOTO_COMPRESSED_SIZE = 2.5 * 1024 * 1024  # 2.5 МБ (после сжатия)
+PHOTO_MAX_SIZE = 10 * 1024 * 1024          # default 10 MiB, adjustable by admin
+PHOTO_COMPRESSED_SIZE = 2.5 * 1024 * 1024  # 2.5 MiB target after compression
 PHOTO_MAX_WIDTH = 1280
 PHOTO_MAX_HEIGHT = 2048
+PHOTO_MAX_PIXELS = 16_000_000
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # Видео
-VIDEO_MAX_SIZE = 50 * 1024 * 1024          # 50 МБ
+VIDEO_MAX_SIZE = 100 * 1024 * 1024         # default 100 MiB, adjustable by admin
+MAX_SINGLE_FILE_HARD_CAP_BYTES = 100 * 1024 * 1024
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 
 MAX_MEDIA_PER_REPORT = 10   # фото+видео суммарно
+ALLOWED_MEDIA_EXTENSIONS = PHOTO_EXTENSIONS | VIDEO_EXTENSIONS
+PHOTO_UPLOAD_SETTING = "photo_max_upload_bytes"
+VIDEO_UPLOAD_SETTING = "video_max_upload_bytes"
+STORAGE_QUOTA_SETTING = "uploads_quota_bytes"
+MAX_CONFIGURED_QUOTA_BYTES = 10 * 1024**4  # 10 TiB
+QUOTA_LOCK_PATH = UPLOADS_DIR / ".quota.lock"
+
+
+@contextmanager
+def uploads_quota_lock_sync():
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(QUOTA_LOCK_PATH, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@asynccontextmanager
+async def uploads_quota_lock():
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = open(QUOTA_LOCK_PATH, "a+b")
+    try:
+        await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def uploads_usage_bytes() -> int:
+    total = 0
+    root = UPLOADS_DIR.resolve()
+    for path in UPLOADS_DIR.iterdir():
+        if path.name == QUOTA_LOCK_PATH.name or path.name.startswith(".upload-"):
+            continue
+        try:
+            if path.is_symlink() or not path.is_file() or path.resolve().parent != root:
+                continue
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def parse_quota_bytes(raw: object, setting_name: str) -> int:
+    if isinstance(raw, bool):
+        raise HTTPException(status_code=400, detail=f"Некорректное значение {setting_name}")
+    try:
+        text = str(raw).strip()
+        if not text or not text.isdecimal():
+            raise ValueError
+        value = int(text)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Значение {setting_name} должно быть целым числом байт")
+    if value < 0 or value > MAX_CONFIGURED_QUOTA_BYTES:
+        raise HTTPException(status_code=400, detail=f"Значение {setting_name} вне допустимого диапазона")
+    return value
+
+
+def configured_upload_limit(extension: str) -> int:
+    setting = PHOTO_UPLOAD_SETTING if extension in PHOTO_EXTENSIONS else VIDEO_UPLOAD_SETTING
+    fallback = PHOTO_MAX_SIZE if extension in PHOTO_EXTENSIONS else VIDEO_MAX_SIZE
+    configured = configured_quota_setting(setting, fallback)
+    if configured == 0:
+        return MAX_SINGLE_FILE_HARD_CAP_BYTES
+    return min(configured, MAX_SINGLE_FILE_HARD_CAP_BYTES)
+
+
+def configured_quota_setting(setting: str, fallback: int) -> int:
+    try:
+        value = int(get_setting(setting, str(fallback)))
+    except (TypeError, ValueError):
+        return fallback
+    if value < 0 or value > MAX_CONFIGURED_QUOTA_BYTES:
+        return fallback
+    return value
+
+
+def configured_storage_quota() -> int:
+    return configured_quota_setting(STORAGE_QUOTA_SETTING, 0)
+
+
+def enforce_storage_quota(additional_bytes: int) -> None:
+    quota = configured_storage_quota()
+    if quota and uploads_usage_bytes() + additional_bytes > quota:
+        raise HTTPException(status_code=413, detail="Недостаточно места: превышена общая квота хранилища")
+
+
+@app.get("/api/media/{filename}")
+def get_media(filename: str, request: Request):
+    get_current_user(request)
+    if (
+        not filename
+        or Path(filename).name != filename
+        or "/" in filename
+        or "\\" in filename
+        or "\x00" in filename
+        or filename in {".", ".."}
+    ):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    root = UPLOADS_DIR.resolve()
+    path = UPLOADS_DIR / filename
+    try:
+        resolved = path.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    if resolved.parent != root or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    safe_filename = filename.replace('"', "").replace("\\r", "").replace("\\n", "")
+    return FileResponse(
+        resolved,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# ---------- Валидация и staging медиа ----------
+async def read_upload_bounded(file: UploadFile, limit: int) -> bytes:
+    chunks = []
+    total = 0
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(status_code=413, detail="Файл превышает допустимый размер")
+            chunks.append(chunk)
+    finally:
+        await file.close()
+    return b"".join(chunks)
+
+
+def validate_image_content(image_data: bytes, extension: str) -> None:
+    expected_formats = {
+        ".jpg": {"JPEG"},
+        ".jpeg": {"JPEG"},
+        ".png": {"PNG"},
+        ".webp": {"WEBP"},
+    }
+    try:
+        with Image.open(BytesIO(image_data)) as image:
+            if image.format not in expected_formats.get(extension, set()):
+                raise ValueError("format mismatch")
+            if image.width * image.height > PHOTO_MAX_PIXELS:
+                raise ValueError("image is too large")
+            image.verify()
+        with Image.open(BytesIO(image_data)) as image:
+            image.load()
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning, OSError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректное изображение")
+
+
+def write_atomic_upload(content: bytes, extension: str) -> str:
+    filename = f"temp_{uuid.uuid4().hex}{extension}"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=UPLOADS_DIR, prefix=".upload-", delete=False
+        ) as output:
+            temp_path = Path(output.name)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp_path, UPLOADS_DIR / filename)
+        return filename
+    except Exception:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+async def stage_video_upload(file: UploadFile, limit: int, extension: str) -> str:
+    filename = f"temp_{uuid.uuid4().hex}{extension}"
+    temp_path = None
+    total = 0
+    try:
+        async with uploads_quota_lock():
+            limit = configured_upload_limit(extension)
+            quota = configured_storage_quota()
+            usage = uploads_usage_bytes()
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=UPLOADS_DIR, prefix=".upload-", delete=False
+            ) as output:
+                temp_path = Path(output.name)
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        raise HTTPException(status_code=413, detail="Файл превышает допустимый размер")
+                    if quota and usage + total > quota:
+                        raise HTTPException(status_code=413, detail="Недостаточно места: превышена общая квота хранилища")
+                    output.write(chunk)
+                if total == 0:
+                    raise HTTPException(status_code=400, detail="Файл пустой")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temp_path, UPLOADS_DIR / filename)
+        return filename
+    except Exception:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
 
 
 # ---------- Сжатие фото ----------
@@ -108,6 +337,18 @@ class TaskIn(BaseModel):
 class SettingIn(BaseModel):
     key: str
     value: str
+
+
+class UploadQuotasIn(BaseModel):
+    photo_max_upload_bytes: str
+    video_max_upload_bytes: str
+    uploads_quota_bytes: str
+
+
+# ---------- Health ----------
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
 # ---------- Страницы ----------
@@ -283,25 +524,75 @@ def me(request: Request):
 # ---------- Настройки медиа (только Админ) ----------
 @app.get("/api/settings")
 def get_settings(request: Request):
-    """Получить все настройки. Доступно всем авторизованным."""
+    """Get operational settings for authenticated users."""
     get_current_user(request)
+    usage = uploads_usage_bytes()
+    quota = configured_storage_quota()
     return {
         "photos_enabled": get_setting("photos_enabled", "1") == "1",
         "videos_enabled": get_setting("videos_enabled", "1") == "1",
+        "photo_max_upload_bytes": configured_quota_setting(PHOTO_UPLOAD_SETTING, PHOTO_MAX_SIZE),
+        "video_max_upload_bytes": configured_quota_setting(VIDEO_UPLOAD_SETTING, VIDEO_MAX_SIZE),
+        "uploads_quota_bytes": quota,
+        "uploads_usage_bytes": usage,
+        "uploads_quota_exceeded": bool(quota and usage > quota),
+    }
+
+
+@app.put("/api/settings/quotas")
+def update_upload_quotas(data: UploadQuotasIn, request: Request):
+    require_any(request, ["admin"])
+    photo_bytes = parse_quota_bytes(data.photo_max_upload_bytes, PHOTO_UPLOAD_SETTING)
+    video_bytes = parse_quota_bytes(data.video_max_upload_bytes, VIDEO_UPLOAD_SETTING)
+    storage_bytes = parse_quota_bytes(data.uploads_quota_bytes, STORAGE_QUOTA_SETTING)
+    if photo_bytes > MAX_SINGLE_FILE_HARD_CAP_BYTES or video_bytes > MAX_SINGLE_FILE_HARD_CAP_BYTES:
+        raise HTTPException(status_code=400, detail="Лимит файла не может превышать 100 MiB")
+
+    with uploads_quota_lock_sync():
+        with get_db() as conn:
+            for key, value in (
+                (PHOTO_UPLOAD_SETTING, photo_bytes),
+                (VIDEO_UPLOAD_SETTING, video_bytes),
+                (STORAGE_QUOTA_SETTING, storage_bytes),
+            ):
+                conn.execute(
+                    "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP",
+                    (key, str(value)),
+                )
+        usage = uploads_usage_bytes()
+
+    return {
+        "ok": True,
+        "photo_max_upload_bytes": photo_bytes,
+        "video_max_upload_bytes": video_bytes,
+        "uploads_quota_bytes": storage_bytes,
+        "uploads_usage_bytes": usage,
+        "uploads_quota_exceeded": bool(storage_bytes and usage > storage_bytes),
     }
 
 
 @app.put("/api/settings")
 def update_setting(data: SettingIn, request: Request):
-    """Изменить настройку. Только Админ."""
+    """Изменить настройки. Изменения квот доступны только администратору."""
     require_any(request, ["admin"])
-    allowed_keys = {"photos_enabled", "videos_enabled"}
-    if data.key not in allowed_keys:
+    if data.key in {"photos_enabled", "videos_enabled"}:
+        if data.value not in ("0", "1"):
+            raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
+        set_setting(data.key, data.value)
+        return {"ok": True, "key": data.key, "value": data.value}
+
+    quota_keys = {PHOTO_UPLOAD_SETTING, VIDEO_UPLOAD_SETTING, STORAGE_QUOTA_SETTING}
+    if data.key not in quota_keys:
         raise HTTPException(status_code=400, detail="Неизвестная настройка")
-    if data.value not in ("0", "1"):
-        raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
-    set_setting(data.key, data.value)
-    return {"ok": True, "key": data.key, "value": data.value}
+    value = parse_quota_bytes(data.value, data.key)
+    if data.key == PHOTO_UPLOAD_SETTING and value > MAX_SINGLE_FILE_HARD_CAP_BYTES:
+        raise HTTPException(status_code=400, detail="Лимит фото не может превышать 100 MiB")
+    if data.key == VIDEO_UPLOAD_SETTING and value > MAX_SINGLE_FILE_HARD_CAP_BYTES:
+        raise HTTPException(status_code=400, detail="Лимит видео не может превышать 100 MiB")
+    with uploads_quota_lock_sync():
+        set_setting(data.key, str(value))
+    return {"ok": True, "key": data.key, "value": value, "uploads_usage_bytes": uploads_usage_bytes()}
 
 
 # ---------- Справочники ----------
@@ -332,6 +623,7 @@ def addresses(
     q: Optional[str] = None,
     limit: int = 100,
 ):
+    limit = max(1, min(limit, 1000))
     with get_db() as conn:
         sql = "SELECT id, city, address_name, manufacturer FROM addresses WHERE active = 1"
         params: list = []
@@ -358,34 +650,35 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Имя файла не определено")
 
     ext = Path(original_filename).suffix.lower()
-    content = await file.read()
 
-    # Определяем тип
+    # Определяем тип и ограничиваем чтение до configured maximum.
     if ext in PHOTO_EXTENSIONS:
         media_type = "photo"
         if get_setting("photos_enabled", "1") != "1":
+            await file.close()
             raise HTTPException(status_code=403, detail="Загрузка фото отключена администратором")
-        if len(content) > PHOTO_MAX_SIZE:
-            raise HTTPException(status_code=400, detail="Фото слишком большое (макс. 5 МБ)")
+        file_limit = configured_upload_limit(ext)
+        content = await read_upload_bounded(file, file_limit or MAX_SINGLE_FILE_HARD_CAP_BYTES)
+        validate_image_content(content, ext)
         try:
             compressed = compress_image(content)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Ошибка обработки фото: {e}")
-        filename = f"temp_{uuid.uuid4().hex}.jpg"
-        with open(UPLOADS_DIR / filename, "wb") as f:
-            f.write(compressed)
+        except (Image.DecompressionBombError, OSError):
+            raise HTTPException(status_code=400, detail="Некорректное изображение")
+        async with uploads_quota_lock():
+            if file_limit and len(content) > configured_upload_limit(ext):
+                raise HTTPException(status_code=413, detail="Лимит размера фото был изменён во время загрузки")
+            enforce_storage_quota(len(compressed))
+            filename = write_atomic_upload(compressed, ".jpg")
 
     elif ext in VIDEO_EXTENSIONS:
         media_type = "video"
         if get_setting("videos_enabled", "1") != "1":
+            await file.close()
             raise HTTPException(status_code=403, detail="Загрузка видео отключена администратором")
-        if len(content) > VIDEO_MAX_SIZE:
-            raise HTTPException(status_code=400, detail="Видео слишком большое (макс. 50 МБ)")
-        filename = f"temp_{uuid.uuid4().hex}{ext}"
-        with open(UPLOADS_DIR / filename, "wb") as f:
-            f.write(content)
+        filename = await stage_video_upload(file, VIDEO_MAX_SIZE, ext)
 
     else:
+        await file.close()
         raise HTTPException(
             status_code=400,
             detail=f"Недопустимый формат. Разрешены: фото {sorted(PHOTO_EXTENSIONS)}, видео {sorted(VIDEO_EXTENSIONS)}",
@@ -394,7 +687,7 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
     return {
         "filename": filename,
         "original_filename": original_filename,
-        "url": f"/uploads/{filename}",
+        "url": f"/api/media/{filename}",
         "media_type": media_type,
     }
 
@@ -647,7 +940,7 @@ def list_crew_reports(request: Request):
                     {
                         "id": media["id"],
                         "filename": media["filename"],
-                        "url": f"/uploads/{media['filename']}",
+                        "url": f"/api/media/{media['filename']}",
                         "media_type": media["media_type"],
                         "created_at": media["created_at"],
                     }
@@ -717,7 +1010,7 @@ def list_head_reports(request: Request):
                     {
                         "id": media["id"],
                         "filename": media["filename"],
-                        "url": f"/uploads/{media['filename']}",
+                        "url": f"/api/media/{media['filename']}",
                         "media_type": media["media_type"],
                         "created_at": media["created_at"],
                     }
@@ -784,7 +1077,7 @@ def list_head_report_comments(report_id: int, request: Request):
                     {
                         "id": media["id"],
                         "filename": media["filename"],
-                        "url": f"/uploads/{media['filename']}",
+                        "url": f"/api/media/{media['filename']}",
                         "media_type": media["media_type"],
                         "created_at": media["created_at"],
                     }
@@ -959,7 +1252,7 @@ def list_reports(
                 media = list(task_media) + list(media)
 
             report["media"] = [
-                {"url": f"/uploads/{m['filename']}", "type": m["media_type"]}
+                {"url": f"/api/media/{m['filename']}", "type": m["media_type"]}
                 for m in media
             ]
             reports.append(report)
@@ -1149,7 +1442,7 @@ async def add_task_media(
 
             result.append({
                 "filename": final_name,
-                "url": f"/uploads/{final_name}",
+                "url": f"/api/media/{final_name}",
                 "type": media_type,
             })
 
@@ -1206,7 +1499,7 @@ def list_tasks(
 
             task["media"] = [
                 {
-                    "url": f"/uploads/{m['filename']}",
+                    "url": f"/api/media/{m['filename']}",
                     "type": m["media_type"],
                     "filename": m["original_filename"] or m["filename"],
                 }
@@ -1268,6 +1561,14 @@ def get_task_for_workflow(conn, task_id: int):
         )
 
     return task
+
+
+def enforce_director_task_scope(user: dict, task) -> None:
+    if get_base_role(user["role"]) == "director" and task["created_by_role"] != "director":
+        raise HTTPException(
+            status_code=403,
+            detail="Директор может проверять только задания, созданные директором",
+        )
 
 
 def add_task_status_history(
@@ -1374,6 +1675,7 @@ def approve_task(task_id: int, request: Request):
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
+        enforce_director_task_scope(user, task)
 
         if task["workflow_status"] != "pending_review":
             raise HTTPException(
@@ -1407,6 +1709,7 @@ def rework_task(task_id: int, request: Request):
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
+        enforce_director_task_scope(user, task)
 
         if task["workflow_status"] != "pending_review":
             raise HTTPException(
@@ -1443,20 +1746,12 @@ def close_task(task_id: int, request: Request):
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
+        enforce_director_task_scope(user, task)
 
         if task["workflow_status"] not in ("open", "rework"):
             raise HTTPException(
                 status_code=400,
                 detail="Это задание сейчас нельзя закрыть"
-            )
-
-        if (
-            user["role"] == "director"
-            and task["created_by_role"] != "director"
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Директор может закрывать только свои задания"
             )
 
         set_task_workflow_status(
@@ -1623,6 +1918,8 @@ def export_excel(
     request: Request,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    city: Optional[str] = None,
+    manufacturer: Optional[str] = None,
 ):
     require_any(request, ["admin", "director"])
     from openpyxl import Workbook
@@ -1640,9 +1937,16 @@ def export_excel(
             LEFT JOIN users cu ON cu.id = t.closed_by
             WHERE (:df IS NULL OR date(t.created_at) >= :df)
               AND (:dt IS NULL OR date(t.created_at) <= :dt)
+              AND (:city IS NULL OR a.city = :city)
+              AND (:manufacturer IS NULL OR a.manufacturer = :manufacturer)
             ORDER BY t.created_at DESC
             """,
-            {"df": date_from, "dt": date_to},
+            {
+                "df": date_from,
+                "dt": date_to,
+                "city": city,
+                "manufacturer": manufacturer,
+            },
         ).fetchall()
 
         reports = conn.execute(
@@ -1655,9 +1959,16 @@ def export_excel(
             JOIN users u ON u.id = r.user_id
             WHERE (:df IS NULL OR date(r.created_at) >= :df)
               AND (:dt IS NULL OR date(r.created_at) <= :dt)
+              AND (:city IS NULL OR a.city = :city)
+              AND (:manufacturer IS NULL OR a.manufacturer = :manufacturer)
             ORDER BY r.created_at DESC
             """,
-            {"df": date_from, "dt": date_to},
+            {
+                "df": date_from,
+                "dt": date_to,
+                "city": city,
+                "manufacturer": manufacturer,
+            },
         ).fetchall()
 
     wb = Workbook()
@@ -1987,7 +2298,7 @@ def get_monitoring(address_id: int, request: Request):
                 "created_at": r["created_at"],
                 "author": r["login"],
                 "role": r["role"],
-                "media": [{"url": f"/uploads/{m['filename']}", "type": m["media_type"]} for m in media],
+                "media": [{"url": f"/api/media/{m['filename']}", "type": m["media_type"]} for m in media],
                 "is_director_comment": False
             })
         
@@ -2140,12 +2451,13 @@ def send_monitoring(data: ReportIn, request: Request):
 def director_feed(request: Request):
     """Смешанная лента заданий и мониторинга для директора"""
     get_current_user(request)
+    import json
     with get_db() as conn:
         # Задания
         tasks = conn.execute("""
             SELECT 'task' as type, t.id, t.description as text, t.created_at,
                    a.city, a.address_name, a.manufacturer,
-                   u.login as author, t.status, t.is_important, t.close_reason
+                   u.login as author, t.status, t.workflow_status, t.is_important, t.close_reason
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
@@ -2467,7 +2779,7 @@ def get_unified_feed(request: Request):
 
             item["media"] = [
                 {
-                    "url": f"/uploads/{m['filename']}",
+                    "url": f"/api/media/{m['filename']}",
                     "type": m["media_type"]
                 }
                 for m in task_media
@@ -2621,7 +2933,7 @@ def get_unified_feed(request: Request):
                 "role": r["role"],
                 "media": [
                     {
-                        "url": f"/uploads/{m['filename']}",
+                        "url": f"/api/media/{m['filename']}",
                         "type": m["media_type"]
                     }
                     for m in media
@@ -2758,7 +3070,7 @@ def get_unified_feed(request: Request):
 
                 report_media = [
                     {
-                        "url": f"/uploads/{m['filename']}",
+                        "url": f"/api/media/{m['filename']}",
                         "type": m["media_type"]
                     }
                     for m in media_rows
@@ -2799,7 +3111,7 @@ def get_unified_feed(request: Request):
                         "role": "head",
                         "media": [
                             {
-                                "url": f"/uploads/{m['filename']}",
+                                "url": f"/api/media/{m['filename']}",
                                 "type": m["media_type"]
                             }
                             for m in comment_media_rows

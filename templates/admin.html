@@ -9,7 +9,7 @@
 
   <title>Albion — Администратор</title>
 
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=role-theme-3">
 
   <style>
     body {
@@ -31,8 +31,8 @@
       gap: 12px;
       margin: -12px -12px 12px;
       padding: 10px 14px;
-      background: #111827;
-      color: #fff;
+      background: var(--header-bg);
+      color: var(--header-text);
       min-height: 54px;
       box-sizing: border-box;
     }
@@ -64,28 +64,29 @@
     }
 
     .director-actions .btn.ghost {
-      color: #fff;
-      border-color: rgba(255,255,255,0.35);
+      color: var(--primary);
+      border-color: var(--border);
       background: transparent;
     }
 
     .director-actions .btn.ghost:hover {
-      background: rgba(255,255,255,0.1);
+      background: var(--surface-muted);
     }
 
     .give-task-btn {
       border: 0;
       border-radius: 9px;
       padding: 9px 14px;
-      background: #2563eb;
-      color: white;
+      background: var(--primary);
+      color: #fff;
+      font-family: var(--font-ui);
       font-weight: 700;
       cursor: pointer;
       white-space: nowrap;
     }
 
     .give-task-btn:hover {
-      background: #1d4ed8;
+      background: var(--primary-hover);
     }
 
     .feed-search-wrap {
@@ -1241,9 +1242,10 @@
 }
 </style>
 </style>
+<link rel="stylesheet" href="/static/role-theme.css?v=5">
 </head>
 
-<body>
+<body class="admin-page">
 
 <div class="director-page">
 
@@ -1291,7 +1293,7 @@
   <div class="settings-section">
 
     <div class="settings-section-title">
-      НАСТРОЙКИ ПРИЛОЖЕНИЯ
+      ОБЩИЕ НАСТРОЙКИ
     </div>
 
     <label class="settings-switch-row">
@@ -1310,6 +1312,27 @@
       <input type="checkbox" id="settingVideos">
     </label>
 
+  </div>
+
+  <div class="settings-section">
+    <div class="settings-section-title">КВОТЫ И ХРАНИЛИЩЕ</div>
+    <p class="settings-help">Ограничения применяются к новым загрузкам. Ноль снимает настраиваемый лимит; для безопасности остаётся технический предел 100 MiB на файл.</p>
+    <div class="quota-form-grid">
+      <label class="quota-field" for="quotaPhotoMiB">
+        <span>Максимум фото, MiB</span>
+        <input id="quotaPhotoMiB" type="number" min="0" max="100" step="1" inputmode="numeric">
+      </label>
+      <label class="quota-field" for="quotaVideoMiB">
+        <span>Максимум видео, MiB</span>
+        <input id="quotaVideoMiB" type="number" min="0" max="100" step="1" inputmode="numeric">
+      </label>
+      <label class="quota-field" for="quotaStorageGiB">
+        <span>Общая квота uploads, GiB</span>
+        <input id="quotaStorageGiB" type="number" min="0" max="10240" step="0.1" inputmode="decimal">
+      </label>
+    </div>
+    <div id="quotaUsage" class="quota-usage" aria-live="polite"></div>
+    <button type="button" class="settings-create-btn" id="saveQuotasBtn">Сохранить квоты</button>
   </div>
 
   <div class="settings-section">
@@ -2338,6 +2361,55 @@
   transform: translateX(20px);
 }
 
+.settings-help {
+  margin: -4px 0 14px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.quota-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quota-field {
+  display: grid;
+  gap: 6px;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quota-field input {
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 8px 11px;
+  border: 1px solid #d8dde2;
+  border-radius: 8px;
+  background: #fff;
+  color: #252a2f;
+  font: inherit;
+}
+
+.quota-field input:focus {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+}
+
+.quota-usage {
+  margin: 12px 0;
+  color: #475569;
+  font-size: 13px;
+}
+
+.quota-usage.over-quota {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
 .users-list {
   display: flex;
   flex-direction: column;
@@ -2441,7 +2513,17 @@
   }
 }
 
+@media (max-width: 900px) {
+  .quota-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 600px) {
+  .quota-form-grid {
+    grid-template-columns: 1fr;
+  }
+
   .settings-section {
     padding: 15px;
   }
@@ -2522,8 +2604,10 @@
     }
 
 </style>
-<script src="/static/admin.js?v=111"></script>
-<script src="/static/admin-settings.js"></script>
+<script src="/static/auth.js?v=1"></script>
+<script src="/static/media.js?v=1"></script>
+<script src="/static/admin.js?v=114"></script>
+<script src="/static/admin-settings.js?v=quota-settings-1"></script>
 
 </body>
 </html>

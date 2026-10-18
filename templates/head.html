@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="/static/style.css?v=role-theme-3">
 
   <title>Альбион — Руководитель</title>
-
   <style>
     :root {
-      --blue: #2563eb;
-      --blue-dark: #1d4ed8;
-      --text: #111827;
-      --muted: #6b7280;
-      --border: #e5e7eb;
-      --bg: #f5f7fa;
-      --white: #ffffff;
-      --danger: #dc2626;
+      --blue: var(--primary);
+      --blue-dark: var(--primary-hover);
+      --text: var(--ink);
+      --muted: var(--text-muted);
+      --border: var(--ui-border);
+      --bg: var(--surface-muted);
+      --white: var(--card);
+      --danger: var(--err);
       --success: #15803d;
     }
 
@@ -28,7 +28,7 @@
       margin: 0;
       padding: 0;
       min-height: 100%;
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: var(--font-ui);
       background: var(--bg);
       color: var(--text);
     }
@@ -479,9 +479,10 @@
       }
     }
   </style>
+  <link rel="stylesheet" href="/static/role-theme.css?v=5">
 </head>
 
-<body>
+<body class="head-page">
 
 <header class="topbar">
   <div class="brand">
@@ -512,7 +513,9 @@
 
 </main>
 
-<script src="/static/head.js"></script>
+<script src="/static/auth.js?v=1"></script>
+<script src="/static/media.js?v=1"></script>
+<script src="/static/head.js?v=1"></script>
 
 </body>
 </html>

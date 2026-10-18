@@ -32,6 +32,9 @@
     head: "Руководитель"
   };
 
+  const MIB = 1024 * 1024;
+  const GIB = 1024 * 1024 * 1024;
+
   const setStatus = (text, error = false) => {
     const el = document.getElementById("settingsStatus");
     if (!el) return;
@@ -48,6 +51,62 @@
 
     if (photos) photos.checked = !!data.photos_enabled;
     if (videos) videos.checked = !!data.videos_enabled;
+
+    const photoQuota = document.getElementById("quotaPhotoMiB");
+    const videoQuota = document.getElementById("quotaVideoMiB");
+    const storageQuota = document.getElementById("quotaStorageGiB");
+    if (photoQuota) photoQuota.value = Number(data.photo_max_upload_bytes) / MIB;
+    if (videoQuota) videoQuota.value = Number(data.video_max_upload_bytes) / MIB;
+    if (storageQuota) storageQuota.value = Number(data.uploads_quota_bytes) / GIB;
+
+    renderQuotaUsage(data);
+  }
+
+  function renderQuotaUsage(data) {
+    const el = document.getElementById("quotaUsage");
+    if (!el) return;
+    const used = Number(data.uploads_usage_bytes) || 0;
+    const quota = Number(data.uploads_quota_bytes) || 0;
+    const formatGiB = bytes => (bytes / GIB).toFixed(2);
+    el.textContent = quota
+      ? `Использовано ${formatGiB(used)} / ${formatGiB(quota)} GiB`
+      : `Использовано ${formatGiB(used)} GiB · общая квота не ограничена`;
+    el.classList.toggle("over-quota", !!quota && used > quota);
+    if (data.uploads_quota_exceeded) {
+      el.textContent += " · квота превышена: новые файлы не принимаются";
+    }
+  }
+
+  async function saveQuotas() {
+    const fields = [
+      ["quotaPhotoMiB", "photo_max_upload_bytes", MIB, 100],
+      ["quotaVideoMiB", "video_max_upload_bytes", MIB, 100],
+      ["quotaStorageGiB", "uploads_quota_bytes", GIB, 10240],
+    ];
+    try {
+      const values = {};
+      for (const [id, key, multiplier, max] of fields) {
+        const input = document.getElementById(id);
+        if (!input || input.value.trim() === "") {
+          throw new Error("Заполните все значения квот");
+        }
+        const number = Number(input.value);
+        if (!Number.isFinite(number) || number < 0 || number > max) {
+          throw new Error(`Проверьте значение «${input?.previousElementSibling?.textContent || id}»`);
+        }
+        values[key] = String(Math.round(number * multiplier));
+      }
+      await API_SETTINGS("/api/settings/quotas", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      await loadSettings();
+      setStatus("Квоты сохранены");
+    } catch (err) {
+      setStatus(err.message || "Не удалось сохранить квоты", true);
+      await loadSettings().catch(() => {});
+    }
   }
 
   async function saveSetting(key, enabled) {
@@ -259,10 +318,10 @@
     }
 
     const createButton = document.getElementById("createUserBtn");
+    if (createButton) createButton.addEventListener("click", createUser);
 
-    if (createButton) {
-      createButton.addEventListener("click", createUser);
-    }
+    const quotaSaveButton = document.getElementById("saveQuotasBtn");
+    if (quotaSaveButton) quotaSaveButton.addEventListener("click", saveQuotas);
   }
 
   if (document.readyState === "loading") {
