@@ -174,8 +174,10 @@ Production host должен иметь:
 
 ## 7. Установка и запуск
 
+Подробный публичный rollout (VPS, Docker, HTTPS, firewall, backup/restore) — в `DEPLOYMENT.md`.
+
 1. Подготовить `.env` из `.env.example`; сгенерировать секрет командой из файла и задать `JWT_SECRET` (≥32 символов).
-2. Проверить authoritative data roots. `app/docker-compose.yml` использует `../data` и `../uploads`; `docker-compose.prod.yml` исторически имеет разные volume mappings — перед использованием сверить/исправить оператором, не переключаться вслепую.
+2. Проверить authoritative data roots. Оба Compose-файла используют `../data` и `../uploads`; app-порт опубликован только на `127.0.0.1:18000` для reverse proxy.
 3. На копии или новой пустой среде проверить schema migration и права на каталог.
 4. Из `/home/.../albion-monitoring/app` после backup:
 

@@ -1,0 +1,14 @@
+# /etc/caddy/Caddyfile — simpler alternative to Nginx.
+# Caddy obtains and renews HTTPS certificates automatically.
+
+albion.example.com {
+    encode zstd gzip
+
+    @private path /docs /redoc /openapi.json /api/login-users
+    respond @private 404
+
+    reverse_proxy 127.0.0.1:18000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

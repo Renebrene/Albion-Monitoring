@@ -17,7 +17,8 @@ services:
       # но только для каталога вне публичного Albion Files uploads/ и после
       # ручной настройки минимальных прав Linux service user/group.
     ports:
-      - "18000:8000"
+      # Publish only on loopback; Nginx/Caddy terminates TLS and proxies here.
+      - "127.0.0.1:18000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 30s

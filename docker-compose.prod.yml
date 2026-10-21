@@ -4,17 +4,24 @@ services:
   app:
     build: .
     container_name: albion_app
-    restart: always
-    ports:
-      - "18000:8000"
-    volumes:
-      # Сохраняем базу данных и загрузки на хосте, чтобы они не терялись при перезапуске контейнера
-      - ./data:/data
-      - ./uploads:/app/uploads
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in app/.env before starting}
+      DB_PATH: /data/monitoring.db
+      UPLOADS_DIR: /uploads
+    ports:
+      # Nginx/Caddy on the host terminates TLS and proxies to loopback.
+      - "127.0.0.1:18000:8000"
+    volumes:
+      # Keep the same authoritative roots as docker-compose.yml.
+      - ../data:/data
+      - ../uploads:/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command: gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
-
-volumes:
-  data:
-  uploads:
