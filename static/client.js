@@ -1,10 +1,6 @@
-const API = (path, opts={}) => fetch(path, opts).then(async r => {
-  if(r.status === 401){ localStorage.clear(); location.href = "/"; }
-  const data = await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data.detail || "Ошибка");
-  return data;
-});
+const API = (path, opts={}) => window.apiFetch(path, opts);
 const authHeaders = () => ({ "Authorization": "Bearer " + localStorage.getItem("token") });
+const esc = value => window.escapeHtml(value);
 const toast = (msg, err=false) => {
   const t = document.getElementById("toast");
   t.textContent = msg; t.className = "toast" + (err?" err":"");
@@ -16,12 +12,107 @@ let myLogin = "";
 let myRole = "";
 let allFeed = [];
 let currentFilter = "all";
+const FEED_PAGE_SIZE = 100;
+let feedHasMore = false;
+let feedLoading = false;
 
 let sortMode = "message";
 let sortDirection = "desc";
 let stateFilter = "";
 
 const expandedFeedItems = new Set();
+
+const FILTER_KEYS = ["type", "state", "sort", "dir", "city", "q", "author", "supplier"];
+const FILTER_DEFAULTS = {
+  type: "", state: "", sort: "", dir: "", city: "", q: "", author: "", supplier: ""
+};
+
+const localDateKey = value => {
+  if(!value) return "";
+  const d = new Date(String(value).includes("T") ? value : String(value) + "Z");
+  if(Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const currentFilterValues = () => ({
+  type: currentFilter === "all" ? "" : currentFilter,
+  state: stateFilter,
+  sort: sortMode === "message" ? "" : sortMode,
+  dir: sortDirection === "desc" ? "" : sortDirection,
+  city: document.getElementById("filterCity")?.value || "",
+  q: document.getElementById("filterSearch")?.value || "",
+  author: document.getElementById("filterAuthor")?.value || "",
+  supplier: document.getElementById("filterSupplier")?.value || ""
+});
+
+const syncFilterUrl = () => {
+  writeFeedFilterParams(currentFilterValues(), FILTER_DEFAULTS);
+};
+
+const updateSortUi = () => {
+  document.querySelectorAll(".sort-filter[data-sort]").forEach(btn => {
+    const active = btn.dataset.sort === sortMode;
+    btn.classList.toggle("active", active);
+
+    const arrow = btn.querySelector(".sort-direction");
+    if(arrow) {
+      arrow.textContent = active
+        ? (sortDirection === "asc" ? "↑" : "↓")
+        : (btn.dataset.sort === "number" ? "↑" : "↓");
+    }
+  });
+};
+
+const restoreFilterState = () => {
+  const saved = readFeedFilterParams(FILTER_KEYS);
+
+  if(["all", "task", "monitoring"].includes(saved.type)) currentFilter = saved.type;
+  if(["new", "pending_review", "rework", "overdue", "important", "done", "closed", "director"].includes(saved.state)) {
+    stateFilter = saved.state;
+  }
+  if(["message", "date", "number"].includes(saved.sort)) sortMode = saved.sort;
+  if(["asc", "desc"].includes(saved.dir)) sortDirection = saved.dir;
+  if(!["all", "task"].includes(currentFilter)) stateFilter = "";
+
+  document.querySelectorAll(".type-filter[data-filter]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.filter === currentFilter);
+  });
+  document.querySelectorAll(".state-filter[data-state]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.state === stateFilter);
+  });
+  updateSortUi();
+
+  const city = document.getElementById("filterCity");
+  if(city) city.value = saved.city || "";
+  const search = document.getElementById("filterSearch");
+  if(search) search.value = saved.q || "";
+  const author = document.getElementById("filterAuthor");
+  if(author) author.value = saved.author || "";
+  const supplier = document.getElementById("filterSupplier");
+  if(supplier) supplier.value = saved.supplier || "";
+};
+
+window.resetFeedFilters = () => {
+  currentFilter = "all";
+  stateFilter = "";
+  sortMode = "message";
+  sortDirection = "desc";
+
+  document.querySelectorAll(".type-filter[data-filter]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.filter === "all");
+  });
+  document.querySelectorAll(".state-filter[data-state]").forEach(btn => {
+    btn.classList.remove("active");
+  });
+  updateSortUi();
+
+  ["filterCity", "filterSearch", "filterAuthor", "filterSupplier"].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.value = "";
+  });
+
+  applyFilters();
+};
 
 const fmtDate = iso => {
   if(!iso) return "";
@@ -184,8 +275,8 @@ const renderFeed = (items) => {
 
       statusBadge = `
         <span class="status-badge ${cls}">
-          ${label}${overdueMark}
-          ${changed ? ` · ${changed}` : ""}
+          ${esc(label)}${overdueMark}
+          ${changed ? ` · ${esc(changed)}` : ""}
         </span>
       `;
     }
@@ -207,7 +298,7 @@ const renderFeed = (items) => {
     if(item.last_message_at) {
       const author = item.last_message_author || "Неизвестно";
       lastMsgHtml =
-        `<span>${fmtDate(item.last_message_at)} · ${author}</span>`;
+        `<span>${esc(fmtDate(item.last_message_at))} · ${esc(author)}</span>`;
     }
 
     let borderClass = "";
@@ -245,10 +336,7 @@ const renderFeed = (items) => {
           ? "service"
           : "admin";
 
-      const safeText = (m.text || "")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\n/g, "<br>");
+      const safeText = esc(m.text || "").replace(/\n/g, "<br>");
 
       const commentMedia = Array.isArray(m.media) ? m.media : [];
 
@@ -290,19 +378,19 @@ const renderFeed = (items) => {
                 return `
                   <div class="client-comment-attachment client-comment-image-attachment">
                     <a
-                      href="${url}"
+                      href="${esc(url)}"
                       target="_blank"
                       rel="noopener"
                       title="Открыть фотографию"
                     >
                       <img
-                        src="${url}"
+                        src="${esc(url)}"
                         class="client-comment-image"
                         alt="Фото"
                         loading="lazy"
                       >
                     </a>
-                    <a href="${url}" download>Скачать</a>
+                    <a href="${esc(url)}" download>Скачать</a>
                   </div>
                 `;
               }
@@ -312,14 +400,14 @@ const renderFeed = (items) => {
                   <span>${isVideo ? "🎬" : "📎"}</span>
                   <a
                     class="client-comment-attachment-name"
-                    href="${url}"
+                    href="${esc(url)}"
                     target="_blank"
                     rel="noopener"
                     title="Открыть файл"
                   >
-                    ${name.replace(/</g, "&lt;")}
+                    ${esc(name)}
                   </a>
-                  <a href="${url}" download>Скачать</a>
+                  <a href="${esc(url)}" download>Скачать</a>
                 </div>
               `;
             }).join("")}
@@ -327,7 +415,7 @@ const renderFeed = (items) => {
         : "";
 
             return `<div class="chat-msg ${chatRole}">
-        <div class="chat-author">${authorName}</div>
+        <div class="chat-author">${esc(authorName)}</div>
         <div class="chat-bubble">
           ${safeText}
           ${mediaHtml}
@@ -467,9 +555,7 @@ const renderFeed = (items) => {
       ? String(lastDirectorComment.text || "")
       : "";
 
-    const directorCommentPreview = directorCommentText
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
+    const directorCommentPreview = esc(directorCommentText)
       .replace(/\s+/g, " ")
       .trim();
 
@@ -521,7 +607,7 @@ const renderFeed = (items) => {
           <!-- СТРОКА 2: город и адрес -->
           <div class="addr-line">
             <span class="addr" style="font-size:15px;font-weight:700">
-              ${item.city} · ${item.address_name}
+              ${esc(item.city)} · ${esc(item.address_name)}
             </span>
           </div>
 
@@ -530,7 +616,7 @@ const renderFeed = (items) => {
             class="closed-short-desc"
             style="font-weight:700;font-style:italic;color:#111"
           >
-            ${shortDesc.replace(/</g,"&lt;")}
+            ${esc(shortDesc)}
           </div>
 
           <!-- СТРОКА 4: последнее сообщение -->
@@ -555,7 +641,7 @@ const renderFeed = (items) => {
       <div class="feed-details" onclick="event.stopPropagation()">
 
         <div class="full-text">
-          ${sourceText.replace(/</g,"&lt;").replace(/\n/g,"<br>")}
+          ${esc(sourceText).replace(/\n/g,"<br>")}
         </div>
 
         ${isTask && taskMediaCount
@@ -574,7 +660,7 @@ const renderFeed = (items) => {
                   return isVideo
                     ? `
                       <video
-                        src="${url}"
+                        src="${esc(url)}"
                         controls
                         preload="metadata"
                         title="Вложение ${index + 1}"
@@ -582,9 +668,10 @@ const renderFeed = (items) => {
                     `
                     : `
                       <img
-                        src="${url}"
+                        src="${esc(url)}"
                         alt="Вложение ${index + 1}"
-                        onclick="window.open('${url}', '_blank')"
+                        data-open-src="${esc(url)}"
+                        onclick="window.open(this.dataset.openSrc, '_blank')"
                       >
                     `;
                 }).join("")}
@@ -594,7 +681,7 @@ const renderFeed = (items) => {
           : ""}
 
         ${isTask && item.close_reason
-          ? `<div class="close-reason">📌 ${item.close_reason.replace(/</g,"&lt;")}</div>`
+          ? `<div class="close-reason">📌 ${esc(item.close_reason)}</div>`
           : ''}
 
         ${!isTask && monitoringMediaCount
@@ -635,19 +722,19 @@ const renderFeed = (items) => {
                   return `
                     <div class="client-comment-attachment client-comment-image-attachment">
                       <a
-                        href="${url}"
+                        href="${esc(url)}"
                         target="_blank"
                         rel="noopener"
                         title="Открыть фотографию"
                       >
                         <img
-                          src="${url}"
+                          src="${esc(url)}"
                           class="client-comment-image"
                           alt="Фото"
                           loading="lazy"
                         >
                       </a>
-                      <a href="${url}" download>Скачать</a>
+                      <a href="${esc(url)}" download>Скачать</a>
                     </div>
                   `;
                 }
@@ -657,14 +744,14 @@ const renderFeed = (items) => {
                     <span>${isVideo ? "🎬" : "📎"}</span>
                     <a
                       class="client-comment-attachment-name"
-                      href="${url}"
+                      href="${esc(url)}"
                       target="_blank"
                       rel="noopener"
                       title="Открыть файл"
                     >
-                      ${name.replace(/</g, "&lt;")}
+                      ${esc(name)}
                     </a>
-                    <a href="${url}" download>Скачать</a>
+                    <a href="${esc(url)}" download>Скачать</a>
                   </div>
                 `;
               }).join("")}
@@ -687,10 +774,7 @@ const renderFeed = (items) => {
           ? `<div class="director-comments-block">
               <div class="director-comment-title">Комментарии директора</div>
               ${directorComments.map(comment => {
-                const commentText = String(comment.text || "")
-                  .replace(/</g, "&lt;")
-                  .replace(/>/g, "&gt;")
-                  .replace(/\n/g, "<br>");
+                const commentText = esc(comment.text || "").replace(/\n/g, "<br>");
 
                 const commentMedia = Array.isArray(comment.media)
                   ? comment.media
@@ -710,14 +794,14 @@ const renderFeed = (items) => {
                             <span>${isVideo ? "🎬" : "📎"}</span>
                             <a
                               class="client-comment-attachment-name"
-                              href="${url}"
+                              href="${esc(url)}"
                               target="_blank"
                               rel="noopener"
                               title="Открыть файл"
                             >
-                              ${name.replace(/</g, "&lt;")}
+                              ${esc(name)}
                             </a>
-                            <a href="${url}" download>Скачать</a>
+                            <a href="${esc(url)}" download>Скачать</a>
                           </div>
                         `;
                       }).join("")}
@@ -880,19 +964,10 @@ const uploadClientChatMedia = async (files, statusEl) => {
     const fd = new FormData();
     fd.append("file", file);
 
-    const response = await fetch("/api/upload", {
+    const data = await window.apiFetch("/api/upload", {
       method: "POST",
-      headers: authHeaders(),
       body: fd
     });
-
-    const data = await response.json().catch(() => ({}));
-
-    if(!response.ok) {
-      throw new Error(
-        data.detail || `Ошибка загрузки файла: ${file.name}`
-      );
-    }
 
     uploaded.push(data.filename);
   }
@@ -1045,12 +1120,58 @@ window.sendMessage = async (type, id) => {
   btn.textContent = "➤";
 };
 
-const loadFeed = async () => {
-  try {
-    allFeed = await API("/api/feed", {headers: authHeaders()});
-    applyFilters();
-  } catch(e) { document.getElementById("feed").innerHTML = '<div style="color:var(--err);padding:20px">Ошибка загрузки ленты: ' + e.message + '</div>'; }
+const updateLoadMoreButton = () => {
+  const button = document.getElementById("loadMoreFeedBtn");
+  if(!button) return;
+
+  button.style.display = feedHasMore ? "block" : "none";
+  button.disabled = feedLoading;
+  button.textContent = feedLoading ? "Загрузка..." : "Показать ещё";
 };
+
+const loadFeed = async ({append = false} = {}) => {
+  if(feedLoading) return;
+  feedLoading = true;
+  updateLoadMoreButton();
+
+  const offset = append ? allFeed.length : 0;
+  const limit = append
+    ? FEED_PAGE_SIZE
+    : Math.min(500, Math.max(FEED_PAGE_SIZE, allFeed.length));
+
+  try {
+    const data = await API(
+      `/api/feed?limit=${limit}&offset=${offset}`,
+      {headers: authHeaders()}
+    );
+    const items = Array.isArray(data) ? data : (data.items || []);
+
+    if(append) {
+      const seen = new Set(allFeed.map(item => feedKey(item.type, item.id)));
+      allFeed = allFeed.concat(
+        items.filter(item => !seen.has(feedKey(item.type, item.id)))
+      );
+    } else {
+      allFeed = items;
+    }
+
+    feedHasMore = Boolean(data.has_more);
+    applyFilters();
+  } catch(e) {
+    if(append || allFeed.length) {
+      toast(e.message || "Не удалось обновить ленту", true);
+    } else {
+      document.getElementById("feed").innerHTML =
+        '<div style="color:var(--err);padding:20px">Ошибка загрузки ленты: '
+        + esc(e.message) + '</div>';
+    }
+  } finally {
+    feedLoading = false;
+    updateLoadMoreButton();
+  }
+};
+
+window.loadMoreFeed = () => loadFeed({append: true});
 
 const updateStats = (filteredFeed = allFeed) => {
   const tasks = filteredFeed.filter(i => i.type === "task");
@@ -1070,9 +1191,9 @@ const updateStats = (filteredFeed = allFeed) => {
   set("statMonitoringTotal", monitoring.length);
   set("statMonitoringMessages", monitoring.filter(i => i.last_message_at).length);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateKey(new Date().toISOString());
   set("statMonitoringToday",
-    monitoring.filter(i => (i.monitoring_date || i.created_at || "").slice(0, 10) === today).length
+    monitoring.filter(i => localDateKey(i.monitoring_date || i.created_at) === today).length
   );
 
   set("statDirectorComments",
@@ -1115,9 +1236,7 @@ const applyFilters = () => {
   } else if(stateFilter === "overdue") {
     filtered = filtered.filter(i =>
       i.type === "task" &&
-      ["open", "pending_review", "rework"].includes(
-        i.workflow_status || "open"
-      ) &&
+      ["open", "rework"].includes(i.workflow_status || "open") &&
       i.is_overdue
     );
 
@@ -1193,6 +1312,12 @@ const applyFilters = () => {
     });
   } else if(sortMode === "number") {
     filtered.sort((a, b) => {
+      // Tasks and monitoring records have independent numbering. Keep the
+      // groups deterministic instead of comparing a task ID to a timestamp.
+      const typeRank = item => item.type === "task" ? 0 : 1;
+      const typeDiff = typeRank(a) - typeRank(b);
+      if(typeDiff) return typeDiff;
+
       const av = a.type === "task"
         ? Number(a.id)
         : getTime(a.monitoring_date || a.created_at);
@@ -1207,6 +1332,7 @@ const applyFilters = () => {
 
   renderFeed(filtered);
   updateStats(filtered);
+  syncFilterUrl();
 };
 
 // ===== ТИП =====
@@ -1217,6 +1343,13 @@ document.querySelectorAll(".type-filter[data-filter]").forEach(btn => {
 
     btn.classList.add("active");
     currentFilter = btn.dataset.filter;
+
+    if(!["all", "task"].includes(currentFilter)) {
+      stateFilter = "";
+      document.querySelectorAll(".state-filter[data-state]").forEach(b => {
+        b.classList.remove("active");
+      });
+    }
 
     applyFilters();
   });
@@ -1313,15 +1446,32 @@ const loadMediaSettings = async () => {
     const s = await API("/api/settings", {headers: authHeaders()});
     document.getElementById("togglePhotos").checked = s.photos_enabled;
     document.getElementById("toggleVideos").checked = s.videos_enabled;
-  } catch(e){}
+  } catch(e) {
+    toast(e.message || "Не удалось загрузить настройки медиа", true);
+  }
 };
 
 const loadUsers = async () => {
   try {
     const users = await API("/api/users", {headers: authHeaders()});
-    const roleNames = {"admin":"Админ","service":"Сервис","director":"Руководитель"};
-    document.getElementById("usersList").innerHTML = users.map(u => `<div class="user-row"><span style="flex:1;min-width:150px"><b>${u.login}</b> <span style="color:var(--muted);font-size:12px">(${roleNames[u.role]})</span></span><input id="pwd_${u.id}" type="password" placeholder="Новый пароль" style="flex:1;min-width:150px;margin:0;padding:8px;font-size:13px"><button class="btn secondary" style="width:auto;margin:0;padding:8px 16px;font-size:13px" onclick="changePassword(${u.id})">Сменить</button></div>`).join("");
-  } catch(e){}
+    const roleNames = {
+      "admin":"Админ",
+      "service":"Сервис",
+      "director":"Руководитель",
+      "crew":"Экипаж",
+      "head":"Руководитель отчётов",
+      "staff":"Бригада",
+      "administrator":"Администратор",
+      "curator":"Куратор"
+    };
+    document.getElementById("usersList").innerHTML = users.map(u => `<div class="user-row"><span style="flex:1;min-width:150px"><b>${esc(u.login)}</b> <span style="color:var(--muted);font-size:12px">(${esc(roleNames[u.role] || u.role)})</span></span><input id="pwd_${u.id}" type="password" placeholder="Новый пароль" style="flex:1;min-width:150px;margin:0;padding:8px;font-size:13px"><button class="btn secondary" style="width:auto;margin:0;padding:8px 16px;font-size:13px" onclick="changePassword(${u.id})">Сменить</button></div>`).join("");
+  } catch(e) {
+    const list = document.getElementById("usersList");
+    if(list) {
+      list.innerHTML = '<div style="padding:12px;color:var(--err);font-size:13px">Не удалось загрузить пользователей</div>';
+    }
+    toast(e.message || "Не удалось загрузить пользователей", true);
+  }
 };
 
 window.addUser = async () => {
@@ -1355,18 +1505,78 @@ document.getElementById("addTaskBtn").onclick = async () => {
   sel.innerHTML = '<option value="">— город —</option>';
   cities.forEach(c => { const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
   document.getElementById("taskAddrId").value = ""; document.getElementById("taskAddrSearch").value = ""; document.getElementById("taskAddrList").innerHTML = ""; document.getElementById("taskDesc").value = "";
+  const taskMedia = document.getElementById("taskMedia");
+  if(taskMedia) taskMedia.value = "";
 };
 
 window.createTask = async () => {
   const addrId = document.getElementById("taskAddrId").value;
   const desc = document.getElementById("taskDesc").value.trim();
+  const mediaInput = document.getElementById("taskMedia");
+  const files = mediaInput ? Array.from(mediaInput.files || []) : [];
+
   if(!addrId || !desc){ toast("Заполните адрес и описание", true); return; }
+  if(files.length > 10){ toast("Можно прикрепить не более 10 файлов", true); return; }
+
+  const button = document.getElementById("createTaskSubmitBtn");
+  if(button){
+    button.disabled = true;
+    button.textContent = "Создание...";
+  }
+
   try {
-    await API("/api/tasks", { method:"POST", headers:{"Content-Type":"application/json", ...authHeaders()}, body: JSON.stringify({address_id: Number(addrId), description: desc}) });
+    const uploaded = [];
+
+    // Upload first: a failed upload must not leave a task without media.
+    for(const file of files){
+      const fd = new FormData();
+      fd.append("file", file);
+      const media = await window.apiFetch("/api/upload", {
+        method: "POST",
+        body: fd
+      });
+      uploaded.push(media.filename);
+    }
+
+    const result = await API("/api/tasks", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({address_id: Number(addrId), description: desc})
+    });
+
+    const taskId = result.task_id;
+
+    if(uploaded.length){
+      try {
+        await API(`/api/tasks/${taskId}/media`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({filenames: uploaded})
+        });
+      } catch(mediaError) {
+        toast(
+          `Задание №${taskId} создано, но вложения не прикрепились: ${mediaError.message}`,
+          true
+        );
+        if(mediaInput) mediaInput.value = "";
+        closeCreateTaskModal();
+        loadFeed();
+        return;
+      }
+    }
+
+    if(mediaInput) mediaInput.value = "";
     toast("✓ Задание создано");
     closeCreateTaskModal();
     loadFeed();
-  } catch(e) { toast(e.message, true); }
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    if(button){
+      button.disabled = false;
+      button.textContent = "Создать";
+    }
+  }
 };
 
 // Создание мониторинга (Сервис, но можно расширить)
@@ -1521,9 +1731,10 @@ const resolveServiceMonitoringAddress = () => {
   return address || null;
 };
 
-document.getElementById("monCity").addEventListener("input", () => {
-  updateServiceMonitoringAddressList();
-});
+document.getElementById("monCity").addEventListener(
+  "input",
+  window.debounce(updateServiceMonitoringAddressList, 150)
+);
 
 document.getElementById("monAddrSearch").addEventListener("input", () => {
   resolveServiceMonitoringAddress();
@@ -1551,7 +1762,7 @@ window.createMonitoring = async () => {
     return;
   }
 
-  const button = document.querySelector("#monitoringModal .btn:not(.secondary)");
+  const button = document.getElementById("monitoringSubmitBtn");
   if(button){
     button.disabled = true;
     button.textContent = "Отправка...";
@@ -1564,22 +1775,11 @@ window.createMonitoring = async () => {
       const fd = new FormData();
       fd.append("file", file);
 
-      const response = await fetch("/api/upload", {
+      const media = await window.apiFetch("/api/upload", {
         method: "POST",
-        headers: authHeaders(),
         body: fd
       });
 
-      if(!response.ok){
-        let message = "Ошибка загрузки файла";
-        try {
-          const error = await response.json();
-          message = error.detail || message;
-        } catch(e) {}
-        throw new Error(message);
-      }
-
-      const media = await response.json();
       uploaded.push(media.filename);
     }
 
@@ -1608,11 +1808,40 @@ window.createMonitoring = async () => {
   }
 };
 
-document.getElementById("taskAddrSearch").addEventListener("input", async e => {
+let taskAddressSearchController = null;
+
+const searchTaskAddresses = async query => {
   const city = document.getElementById("taskCity").value;
-  if(!city) return;
-  const rows = await API(`/api/addresses?city=${encodeURIComponent(city)}&q=${encodeURIComponent(e.target.value)}`);
-  document.getElementById("taskAddrList").innerHTML = rows.map(r => `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%" onclick="pickTaskAddr(${r.id}, '${r.address_name.replace(/'/g, "\\'")}')">${r.address_name}</button>`).join("");
+  const list = document.getElementById("taskAddrList");
+
+  if(!city) {
+    list.innerHTML = "";
+    return;
+  }
+
+  taskAddressSearchController?.abort();
+  const controller = new AbortController();
+  taskAddressSearchController = controller;
+
+  try {
+    const rows = await API(
+      `/api/addresses?city=${encodeURIComponent(city)}&q=${encodeURIComponent(query)}`,
+      {signal: controller.signal}
+    );
+
+    if(controller !== taskAddressSearchController) return;
+
+    list.innerHTML = rows.map(r => `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%" onclick="pickTaskAddr(${Number(r.id)}, ${esc(JSON.stringify(String(r.address_name || "")))})">${esc(r.address_name)}</button>`).join("");
+  } catch(e) {
+    if(e.name === "AbortError") return;
+    toast(e.message || "Не удалось загрузить адреса", true);
+  }
+};
+
+const debouncedTaskAddressSearch = window.debounce(searchTaskAddresses, 250);
+
+document.getElementById("taskAddrSearch").addEventListener("input", e => {
+  debouncedTaskAddressSearch(e.target.value);
 });
 window.pickTaskAddr = (id, name) => { document.getElementById("taskAddrId").value = id; document.getElementById("taskAddrSearch").value = name; document.getElementById("taskAddrList").innerHTML = ""; };
 
@@ -1702,9 +1931,12 @@ window.deleteTask = async (id) => {
   const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
   if(!me){ location.href = "/"; return; }
   myLogin = me.login;
-  myRole = me.role;
+  myRole = getBaseRole(me.role);
 
   document.getElementById("whoami").textContent = me.login;
+
+  const roleName = document.getElementById("roleName");
+  if(roleName) roleName.textContent = me.role_label || me.role;
 
   // Статистика недоступна для роли Сервис
   if (myRole === "service") {
@@ -1738,8 +1970,12 @@ window.deleteTask = async (id) => {
   cities.forEach(c => { const o = document.createElement("option"); o.value = c; o.textContent = c; citySel.appendChild(o); });
 
   document.getElementById("filterCity").addEventListener("change", applyFilters);
-  document.getElementById("filterSearch").addEventListener("input", applyFilters);
+  document.getElementById("filterSearch").addEventListener(
+    "input",
+    window.debounce(applyFilters, 150)
+  );
   document.getElementById("logout").onclick = () => logoutCurrentSession("/");
-  
+
+  restoreFilterState();
   loadFeed();
 })();

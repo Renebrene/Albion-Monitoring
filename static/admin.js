@@ -64,26 +64,40 @@ function renderMonitoringMedia(media) {
   return `
     <div class="comment-attachments">
       ${media.map((m, index) => {
-        const name = String(m || "");
-        const url = name.startsWith("/uploads/")
-          ? name
-          : `/uploads/${encodeURIComponent(name)}`;
+        let name = "Файл";
+        let url = "";
 
-        const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(name);
+        if(m && typeof m === "object") {
+          url = String(m.url || "");
+          if(url) name = url.split("/").pop() || "Файл";
+        } else {
+          name = String(m || "");
+          url = name.startsWith("/uploads/")
+            ? name
+            : `/uploads/${encodeURIComponent(name)}`;
+        }
+
+        const mediaType = m && typeof m === "object"
+          ? String(m.type || m.media_type || "")
+          : "";
+
+        const isVideo =
+          mediaType === "video" ||
+          /\.(mp4|mov|webm|m4v)$/i.test(name);
 
         return `
           <div class="comment-attachment">
             <span class="comment-attachment-icon">${isVideo ? "🎬" : "📎"}</span>
             <a
               class="comment-attachment-name"
-              href="${url}"
+              href="${esc(url)}"
               target="_blank"
               rel="noopener"
               title="Открыть файл"
             >
-              ${name.replace(/</g, "&lt;")}
+              ${esc(name)}
             </a>
-            <a href="${url}" download>Скачать</a>
+            <a href="${esc(url)}" download>Скачать</a>
           </div>
         `;
       }).join("")}
@@ -106,17 +120,10 @@ async function uploadCommentMedia(files, statusEl) {
     const fd = new FormData();
     fd.append("file", file);
 
-    const response = await fetch("/api/upload", {
+    const data = await window.apiFetch("/api/upload", {
       method: "POST",
-      headers: authHeaders ? authHeaders() : {},
       body: fd
     });
-
-    const data = await response.json().catch(() => ({}));
-
-    if(!response.ok) {
-      throw new Error(data.detail || `Ошибка загрузки файла: ${file.name}`);
-    }
 
     uploaded.push(data.filename);
   }
@@ -164,27 +171,7 @@ function updateCommentMediaSelection(input, statusEl, listEl) {
   }
 }
 
-const API = async (url, options = {}) => {
-  const token = localStorage.getItem("token");
-
-  const headers = {
-    ...(options.headers || {}),
-    ...(token ? {"Authorization": `Bearer ${token}`} : {})
-  };
-
-  const res = await fetch(url, {...options, headers});
-
-  if(!res.ok) {
-    let msg = `Ошибка ${res.status}`;
-    try {
-      const data = await res.json();
-      msg = data.detail || msg;
-    } catch {}
-    throw new Error(msg);
-  }
-
-  return res.json();
-};
+const API = (url, options = {}) => window.apiFetch(url, options);
 
 let myLogin = "";
 let myRole = "";
@@ -197,6 +184,99 @@ let sortMode = "message";
 let sortDirection = "desc";
 
 const expandedFeedItems = new Set();
+
+const FILTER_KEYS = ["type", "state", "sort", "dir", "city", "q", "author", "supplier"];
+const FILTER_DEFAULTS = {
+  type: "", state: "", sort: "", dir: "", city: "", q: "", author: "", supplier: ""
+};
+
+const currentFilterValues = () => ({
+  type: currentFilter === "all" ? "" : currentFilter,
+  state: stateFilter,
+  sort: sortMode === "message" ? "" : sortMode,
+  dir: sortDirection === "desc" ? "" : sortDirection,
+  city: document.getElementById("filterCity")?.value || "",
+  q: document.getElementById("filterSearch")?.value || "",
+  author: document.getElementById("filterAuthor")?.value || "",
+  supplier: document.getElementById("filterSupplier")?.value || ""
+});
+
+const syncFilterUrl = () => {
+  writeFeedFilterParams(currentFilterValues(), FILTER_DEFAULTS);
+};
+
+const updateSortUi = () => {
+  document.querySelectorAll(".sort-filter[data-sort]").forEach(btn => {
+    const active = btn.dataset.sort === sortMode;
+    btn.classList.toggle("active", active);
+
+    const arrow = btn.querySelector(".sort-direction");
+    if(arrow) {
+      arrow.textContent = active
+        ? (sortDirection === "asc" ? "↑" : "↓")
+        : (btn.dataset.sort === "number" ? "↑" : "↓");
+    }
+  });
+};
+
+const restoreFilterState = refreshAddressOptions => {
+  const saved = readFeedFilterParams(FILTER_KEYS);
+
+  if(["all", "task", "monitoring", "crew_report"].includes(saved.type)) currentFilter = saved.type;
+  if(["new", "pending_review", "rework", "overdue", "important", "done", "closed", "director"].includes(saved.state)) {
+    stateFilter = saved.state;
+  }
+  if(["message", "date", "number"].includes(saved.sort)) sortMode = saved.sort;
+  if(["asc", "desc"].includes(saved.dir)) sortDirection = saved.dir;
+  if(!["all", "task"].includes(currentFilter)) stateFilter = "";
+
+  document.querySelectorAll(".type-filter[data-filter]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.filter === currentFilter);
+  });
+  document.querySelectorAll(".state-filter[data-state]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.state === stateFilter);
+  });
+  updateSortUi();
+
+  const city = document.getElementById("filterCity");
+  if(city) city.value = saved.city || "";
+  if(typeof refreshAddressOptions === "function") refreshAddressOptions();
+
+  const address = document.getElementById("filterSearch");
+  if(address) address.value = saved.q || "";
+  const author = document.getElementById("filterAuthor");
+  if(author) author.value = saved.author || "";
+  const supplier = document.getElementById("filterSupplier");
+  if(supplier) supplier.value = saved.supplier || "";
+};
+
+window.resetFeedFilters = () => {
+  currentFilter = "all";
+  stateFilter = "";
+  sortMode = "message";
+  sortDirection = "desc";
+
+  document.querySelectorAll(".type-filter[data-filter]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.filter === "all");
+  });
+  document.querySelectorAll(".state-filter[data-state]").forEach(btn => {
+    btn.classList.remove("active");
+  });
+  updateSortUi();
+
+  ["filterCity", "filterSearch", "filterAuthor", "filterSupplier"].forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+
+    if(id === "filterSearch" && el.tagName === "SELECT") {
+      el.innerHTML = '<option value="">Все адреса</option>';
+    } else {
+      el.value = "";
+    }
+  });
+
+  refreshFeed();
+};
 
 const esc = value => String(value ?? "")
   .replace(/&/g, "&amp;")
@@ -600,7 +680,8 @@ const taskActionsHtml =
             class="task-actions"
             onclick="event.stopPropagation()"
           >
-            ${item.workflow_status === "pending_review"
+            ${item.workflow_status === "pending_review" &&
+              (myRole === "admin" || item.created_by_role === "director")
               ? `
                 <button
                   class="btn"
@@ -790,53 +871,65 @@ const taskActionsHtml =
               )
           }
 
-          <div
-            class="chat-input-wrap"
-            onclick="event.stopPropagation()"
-          >
-            <input
-              id="dc-media-${item.type}-${item.id}"
-              type="file"
-              accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
-              multiple
-              style="display:none"
-              onchange="updateCommentMediaSelection(
-                this,
-                document.getElementById('dc-media-status-${item.type}-${item.id}'),
-                document.getElementById('dc-media-list-${item.type}-${item.id}')
-              )"
-            >
+          ${item.type === "crew_report"
+            ? `
+              <div
+                class="crew-report-comment-note"
+                style="margin-top:12px;color:var(--muted);font-size:12px"
+              >
+                Комментарии к отчётам экипажа доступны Руководителю.
+              </div>
+            `
+            : `
+              <div
+                class="chat-input-wrap"
+                onclick="event.stopPropagation()"
+              >
+                <input
+                  id="dc-media-${item.type}-${item.id}"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-m4v"
+                  multiple
+                  style="display:none"
+                  onchange="updateCommentMediaSelection(
+                    this,
+                    document.getElementById('dc-media-status-${item.type}-${item.id}'),
+                    document.getElementById('dc-media-list-${item.type}-${item.id}')
+                  )"
+                >
 
-            <button
-              type="button"
-              class="comment-media-attach"
-              title="Прикрепить фото или видео"
-              onclick="event.stopPropagation(); document.getElementById('dc-media-${item.type}-${item.id}').click()"
-            >📎</button>
+                <button
+                  type="button"
+                  class="comment-media-attach"
+                  title="Прикрепить фото или видео"
+                  onclick="event.stopPropagation(); document.getElementById('dc-media-${item.type}-${item.id}').click()"
+                >📎</button>
 
-            <textarea
-              id="dc-input-${item.type}-${item.id}"
-              placeholder="Оставить комментарий..."
-              rows="2"
-            ></textarea>
+                <textarea
+                  id="dc-input-${item.type}-${item.id}"
+                  placeholder="Оставить комментарий..."
+                  rows="2"
+                ></textarea>
 
-            <button
-              class="send-chat-btn"
-              onclick="sendDirectorComment('${item.type}', ${item.id})"
-            >
-              Отправить
-            </button>
+                <button
+                  class="send-chat-btn"
+                  onclick="sendDirectorComment('${item.type}', ${item.id})"
+                >
+                  Отправить
+                </button>
 
-            <div
-              id="dc-media-status-${item.type}-${item.id}"
-              class="comment-media-status"
-            ></div>
+                <div
+                  id="dc-media-status-${item.type}-${item.id}"
+                  class="comment-media-status"
+                ></div>
 
-            <div
-              id="dc-media-list-${item.type}-${item.id}"
-              class="comment-media-list"
-            ></div>
-          </div>
+                <div
+                  id="dc-media-list-${item.type}-${item.id}"
+                  class="comment-media-list"
+                ></div>
+              </div>
+            `
+          }
 
         </div>
 
@@ -890,9 +983,7 @@ const updateStats = (filteredFeed = allFeedItems) => {
   set(
     "statStateOverdue",
     tasks.filter(item =>
-      ["open", "pending_review", "rework"].includes(
-        item.workflow_status || "open"
-      ) &&
+      ["open", "rework"].includes(item.workflow_status || "open") &&
       item.is_overdue
     ).length
   );
@@ -961,13 +1052,7 @@ const applyFilters = items => {
 
   // Тип.
   if(currentFilter !== "all") {
-    result = result.filter(item => {
-      if(currentFilter === "monitoring") {
-        return item.type === "monitoring" || item.type === "crew_report";
-      }
-
-      return item.type === currentFilter;
-    });
+    result = result.filter(item => item.type === currentFilter);
   }
 
   // Состояние.
@@ -992,9 +1077,7 @@ const applyFilters = items => {
   } else if(stateFilter === "overdue") {
     result = result.filter(item =>
       item.type === "task" &&
-      ["open", "pending_review", "rework"].includes(
-        item.workflow_status || "open"
-      ) &&
+      ["open", "rework"].includes(item.workflow_status || "open") &&
       item.is_overdue
     );
 
@@ -1073,8 +1156,17 @@ const applyFilters = items => {
     let tb;
 
     if(sortMode === "number") {
-      ta = Number(a.id) || 0;
-      tb = Number(b.id) || 0;
+      // Task IDs and monitoring dates are different number spaces.
+      const typeRank = item => item.type === "task" ? 0 : 1;
+      const typeDiff = typeRank(a) - typeRank(b);
+      if(typeDiff) return typeDiff;
+
+      ta = a.type === "task"
+        ? Number(a.id) || 0
+        : getTime(a.monitoring_date || a.created_at);
+      tb = b.type === "task"
+        ? Number(b.id) || 0
+        : getTime(b.monitoring_date || b.created_at);
     } else if(sortMode === "date") {
       ta = getTime(a.created_at);
       tb = getTime(b.created_at);
@@ -1092,29 +1184,72 @@ const applyFilters = items => {
 };
 
 let allFeedItems = [];
+const FEED_PAGE_SIZE = 100;
+let feedHasMore = false;
+let feedLoading = false;
+
+const updateLoadMoreButton = () => {
+  const button = document.getElementById("loadMoreFeedBtn");
+  if(!button) return;
+
+  button.style.display = feedHasMore ? "block" : "none";
+  button.disabled = feedLoading;
+  button.textContent = feedLoading ? "Загрузка..." : "Показать ещё";
+};
 
 const refreshFeed = () => {
   const filtered = applyFilters(allFeedItems);
   renderFeed(filtered);
   updateStats(filtered);
+  syncFilterUrl();
 };
 
-const loadFeed = async () => {
+const loadFeed = async ({append = false} = {}) => {
+  if(feedLoading) return;
+  feedLoading = true;
+  updateLoadMoreButton();
+
+  const offset = append ? allFeedItems.length : 0;
+  const limit = append
+    ? FEED_PAGE_SIZE
+    : Math.min(500, Math.max(FEED_PAGE_SIZE, allFeedItems.length));
+
   try {
-    allFeedItems = await API("/api/feed");
+    const data = await API(`/api/feed?limit=${limit}&offset=${offset}`);
+    const items = Array.isArray(data) ? data : (data.items || []);
+
+    if(append) {
+      const seen = new Set(allFeedItems.map(item => feedKey(item.type, item.id)));
+      allFeedItems = allFeedItems.concat(
+        items.filter(item => !seen.has(feedKey(item.type, item.id)))
+      );
+    } else {
+      allFeedItems = items;
+    }
+
+    feedHasMore = Boolean(data.has_more);
     refreshFeed();
   } catch(e) {
-    document.getElementById("feed").innerHTML = `
-      <div style="
-        text-align:center;
-        color:#ef4444;
-        padding:40px
-      ">
-        Ошибка загрузки ленты: ${esc(e.message)}
-      </div>
-    `;
+    if(append || allFeedItems.length) {
+      toast(e.message || "Не удалось обновить ленту");
+    } else {
+      document.getElementById("feed").innerHTML = `
+        <div style="
+          text-align:center;
+          color:#ef4444;
+          padding:40px
+        ">
+          Ошибка загрузки ленты: ${esc(e.message)}
+        </div>
+      `;
+    }
+  } finally {
+    feedLoading = false;
+    updateLoadMoreButton();
   }
 };
+
+window.loadMoreFeed = () => loadFeed({append: true});
 
 
 window.approveDirectorTask = async (taskId) => {
@@ -1172,6 +1307,11 @@ window.closeDirectorTask = async (taskId) => {
 };
 
 window.sendDirectorComment = async (type, id) => {
+  if(type === "crew_report") {
+    toast("Комментарии к отчётам экипажа доступны Руководителю");
+    return;
+  }
+
   const input = document.getElementById(`dc-input-${type}-${id}`);
   const mediaInput = document.getElementById(`dc-media-${type}-${id}`);
   const statusEl = document.getElementById(`dc-media-status-${type}-${id}`);
@@ -1417,6 +1557,9 @@ window.openTaskModal = async () => {
   if(description) description.value = "";
   if(important) important.checked = false;
 
+  const media = document.getElementById("taskMedia");
+  if(media) media.value = "";
+
   await loadAddresses();
 
   setTimeout(() => city?.focus(), 100);
@@ -1473,6 +1616,21 @@ window.createDirectorTask = async () => {
   }
 
   try {
+    const uploaded = [];
+
+    // Upload first: a failed upload must not leave a task without media.
+    for(const file of files) {
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const media = await window.apiFetch("/api/upload", {
+        method: "POST",
+        body: fd
+      });
+
+      uploaded.push(media.filename);
+    }
+
     const result = await API("/api/tasks", {
       method: "POST",
       headers: {
@@ -1486,45 +1644,27 @@ window.createDirectorTask = async () => {
     });
 
     const taskId = result.task_id;
-    const uploaded = [];
-
-    for(const file of files) {
-      const fd = new FormData();
-      fd.append("file", file);
-
-      const uploadResponse = await fetch("/api/upload", {
-        method: "POST",
-        headers: {
-          ...(localStorage.getItem("token")
-            ? {"Authorization": `Bearer ${localStorage.getItem("token")}`}
-            : {})
-        },
-        body: fd
-      });
-
-      if(!uploadResponse.ok) {
-        let message = "Ошибка загрузки файла";
-        try {
-          const error = await uploadResponse.json();
-          message = error.detail || message;
-        } catch(e) {}
-        throw new Error(message);
-      }
-
-      const media = await uploadResponse.json();
-      uploaded.push(media.filename);
-    }
 
     if(uploaded.length) {
-      await API(`/api/tasks/${taskId}/media`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          filenames: uploaded
-        })
-      });
+      try {
+        await API(`/api/tasks/${taskId}/media`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            filenames: uploaded
+          })
+        });
+      } catch(mediaError) {
+        if(mediaInput) mediaInput.value = "";
+        closeTaskModal();
+        toast(
+          `Задание №${taskId} создано, но вложения не прикрепились: ${mediaError.message}`
+        );
+        await loadFeed();
+        return;
+      }
     }
 
     if(mediaInput) {
@@ -1757,13 +1897,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const me = await API("/api/me").catch(() => null);
 
-  if(!me || !["director", "admin"].includes(me.role)) {
+  if(!me || !["director", "admin"].includes(getBaseRole(me.role))) {
     location.href = "/";
     return;
   }
 
   myLogin = me.login || "";
-  myRole = me.role || "";
+  myRole = getBaseRole(me.role);
 
   const userInfo = document.getElementById("userInfo");
 
@@ -1780,6 +1920,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       document.querySelectorAll(".type-filter[data-filter]").forEach(b => {
         b.classList.toggle("active", b === button);
       });
+
+      if(!["all", "task"].includes(currentFilter)) {
+        stateFilter = "";
+        document.querySelectorAll(".state-filter[data-state]").forEach(b => {
+          b.classList.remove("active");
+        });
+      }
 
       refreshFeed();
     });
@@ -1919,6 +2066,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   );
 
   updateAddressFilter();
+  restoreFilterState(updateAddressFilter);
 
   document.getElementById("taskModal")?.addEventListener(
     "click",

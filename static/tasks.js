@@ -1,10 +1,6 @@
-const API = (path, opts={}) => fetch(path, opts).then(async r => {
-  if(r.status === 401){ localStorage.clear(); location.href = "/"; }
-  const data = await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data.detail || "Ошибка");
-  return data;
-});
+const API = (path, opts={}) => window.apiFetch(path, opts);
 const authHeaders = () => ({ "Authorization": "Bearer " + localStorage.getItem("token") });
+const esc = value => window.escapeHtml(value);
 const toast = (msg, err=false) => {
   const t = document.getElementById("toast");
   t.textContent = msg; t.className = "toast" + (err?" err":"");
@@ -72,7 +68,7 @@ const renderTasks = (tasks) => {
     
     let closeReasonHtml = "";
     if(t.close_reason){
-      closeReasonHtml = `<div class="close-reason">📌 ${t.close_reason.replace(/</g,"&lt;")}</div>`;
+      closeReasonHtml = `<div class="close-reason">📌 ${esc(t.close_reason)}</div>`;
     }
     
     return `
@@ -84,9 +80,9 @@ const renderTasks = (tasks) => {
           </div>
         </div>
         <div class="task-meta">
-          <div class="city">${t.city}</div>
-          <div class="addr">${t.address_name}</div>
-          <div class="task-desc">${t.description.replace(/</g,"&lt;")}</div>
+          <div class="city">${esc(t.city)}</div>
+          <div class="addr">${esc(t.address_name)}</div>
+          <div class="task-desc">${esc(t.description)}</div>
 
           ${
             Array.isArray(t.media) && t.media.length
@@ -102,7 +98,7 @@ const renderTasks = (tasks) => {
                     return isVideo
                       ? `
                         <video
-                          src="${url}"
+                          src="${esc(url)}"
                           controls
                           preload="metadata"
                           title="Вложение ${index + 1}"
@@ -110,9 +106,10 @@ const renderTasks = (tasks) => {
                       `
                       : `
                         <img
-                          src="${url}"
+                          src="${esc(url)}"
                           alt="Вложение ${index + 1}"
-                          onclick="window.open('${url}', '_blank')"
+                          data-open-src="${esc(url)}"
+                          onclick="window.open(this.dataset.openSrc, '_blank')"
                         >
                       `;
                   }).join("")}
@@ -122,7 +119,7 @@ const renderTasks = (tasks) => {
           }
 
           ${closeReasonHtml}
-          <div style="font-size:12px;color:var(--muted);margin:8px 0">📅 ${fmtDate(t.created_at)} · 👤 ${t.author}</div>
+          <div style="font-size:12px;color:var(--muted);margin:8px 0">📅 ${esc(fmtDate(t.created_at))} · 👤 ${esc(t.author)}</div>
           ${adminActions}
         </div>
         <div class="chat-box" id="chat-${t.id}">
@@ -156,39 +153,59 @@ const renderTasks = (tasks) => {
     `;
   }).join("");
 
-  tasks.forEach(t => loadChat(t.id));
+  tasks.forEach(t => {
+    if(Array.isArray(t.comments)) {
+      renderChatMessages(t.id, t.comments);
+    } else {
+      loadChat(t.id);
+    }
+  });
+};
+
+const renderChatMessages = (taskId, comments) => {
+  const chatBox = document.getElementById(`chat-${taskId}`);
+  if(!chatBox) return;
+
+  if(!Array.isArray(comments) || !comments.length) {
+    chatBox.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">Пока нет ответов</div>';
+    return;
+  }
+
+  chatBox.innerHTML = comments.map(c => {
+    const isMe = c.author === myLogin;
+    const isDirector = c.is_director_comment === true;
+    const mediaHtml = c.media && c.media.length ? `
+      <div class="chat-media">
+        ${c.media.map(m => {
+          const name = typeof m === "string" ? m : String(m?.url || "");
+          const url = typeof m === "string"
+            ? `/uploads/${encodeURIComponent(name)}`
+            : name;
+          const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(url);
+          if(!url) return "";
+          return isVideo
+            ? `<video src="${esc(url)}" controls></video>`
+            : `<img src="${esc(url)}" data-open-src="${esc(url)}" onclick="window.open(this.dataset.openSrc,'_blank')">`;
+        }).join("")}
+      </div>` : "";
+    return `
+      <div class="chat-msg ${isMe ? 'me' : ''} ${isDirector ? 'director' : ''}">
+        <div class="chat-author">${esc(c.author)}</div>
+        <div class="chat-bubble">
+          ${esc(c.text).replace(/\n/g, "<br>")}
+          ${mediaHtml}
+          <div class="chat-time">${esc(fmtDate(c.created_at))}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  chatBox.scrollTop = chatBox.scrollHeight;
 };
 
 const loadChat = async (taskId) => {
   try {
     const comments = await API(`/api/tasks/${taskId}/comments`, {headers: authHeaders()});
-    const chatBox = document.getElementById(`chat-${taskId}`);
-    if(!comments.length) {
-      chatBox.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">Пока нет ответов</div>';
-      return;
-    }
-    chatBox.innerHTML = comments.map(c => {
-      const isMe = c.author === myLogin;
-      const isDirector = c.is_director_comment === true;
-      const mediaHtml = c.media && c.media.length ? `
-        <div class="chat-media">
-          ${c.media.map(m => {
-            const isVideo = m.endsWith('.mp4') || m.endsWith('.mov') || m.endsWith('.webm');
-            return isVideo ? `<video src="/uploads/${m}" controls></video>` : `<img src="/uploads/${m}" onclick="window.open('/uploads/${m}','_blank')">`;
-          }).join("")}
-        </div>` : "";
-      return `
-        <div class="chat-msg ${isMe ? 'me' : ''} ${isDirector ? 'director' : ''}">
-          <div class="chat-author">${c.author}</div>
-          <div class="chat-bubble">
-            ${c.text.replace(/\n/g, "<br>")}
-            ${mediaHtml}
-            <div class="chat-time">${fmtDate(c.created_at)}</div>
-          </div>
-        </div>
-      `;
-    }).join("");
-    chatBox.scrollTop = chatBox.scrollHeight;
+    renderChatMessages(taskId, comments);
   } catch(e) {
     const box = document.getElementById(`chat-${taskId}`);
     if(box) box.innerHTML = '<div style="color:var(--err);padding:10px">Ошибка загрузки</div>';
@@ -227,22 +244,11 @@ window.sendComment = async (taskId) => {
       const fd = new FormData();
       fd.append("file", file);
 
-      const uploadResponse = await fetch("/api/upload", {
+      const media = await window.apiFetch("/api/upload", {
         method: "POST",
-        headers: authHeaders(),
         body: fd
       });
 
-      if(!uploadResponse.ok){
-        let message = "Ошибка загрузки файла";
-        try {
-          const err = await uploadResponse.json();
-          message = err.detail || message;
-        } catch(e) {}
-        throw new Error(message);
-      }
-
-      const media = await uploadResponse.json();
       uploaded.push(media.filename);
     }
 
@@ -262,8 +268,7 @@ window.sendComment = async (taskId) => {
     if(input) input.value = "";
     if(mediaInput) mediaInput.value = "";
 
-    await loadChat(taskId);
-    loadTasks();
+    await loadTasks();
 
   } catch(e) {
     toast(e.message, true);
@@ -276,8 +281,16 @@ window.sendComment = async (taskId) => {
 };
 
 const loadTasks = async () => {
-  const tasks = await API(`/api/tasks?status=${currentStatus}`, {headers: authHeaders()});
-  renderTasks(tasks);
+  try {
+    const tasks = await API(`/api/tasks?status=${currentStatus}`, {headers: authHeaders()});
+    renderTasks(tasks);
+  } catch(e) {
+    const list = document.getElementById("taskList");
+    if(list) {
+      list.innerHTML = `<div style="text-align:center;color:var(--err);padding:40px">Ошибка загрузки заданий: ${esc(e.message)}</div>`;
+    }
+    toast(e.message || "Не удалось загрузить задания", true);
+  }
 };
 
 // ===== АДМИН =====
@@ -296,6 +309,9 @@ document.getElementById("addTaskBtn").onclick = async () => {
   document.getElementById("taskAddrSearch").value = "";
   document.getElementById("taskAddrList").innerHTML = "";
   document.getElementById("taskDesc").value = "";
+
+  const media = document.getElementById("taskMedia");
+  if(media) media.value = "";
 };
 
 window.saveMediaSettings = async () => {
@@ -317,10 +333,19 @@ const loadMediaSettings = async () => {
 const loadUsers = async () => {
   try {
     const users = await API("/api/users", {headers: authHeaders()});
-    const roleNames = {"admin":"Админ","service":"Сервис","director":"Руководитель"};
+    const roleNames = {
+      "admin":"Админ",
+      "service":"Сервис",
+      "director":"Руководитель",
+      "crew":"Экипаж",
+      "head":"Руководитель отчётов",
+      "staff":"Бригада",
+      "administrator":"Администратор",
+      "curator":"Куратор"
+    };
     document.getElementById("usersList").innerHTML = users.map(u => `
       <div class="user-row">
-        <span style="flex:1;min-width:150px"><b>${u.login}</b> <span style="color:var(--muted);font-size:12px">(${roleNames[u.role]})</span></span>
+        <span style="flex:1;min-width:150px"><b>${esc(u.login)}</b> <span style="color:var(--muted);font-size:12px">(${esc(roleNames[u.role] || u.role)})</span></span>
         <input id="pwd_${u.id}" type="password" placeholder="Новый пароль" style="flex:1;min-width:150px;margin:0;padding:8px;font-size:13px">
         <button class="btn secondary" style="width:auto;margin:0;padding:8px 16px;font-size:13px" onclick="changePassword(${u.id})">Сменить</button>
       </div>
@@ -427,10 +452,26 @@ window.createTask = async () => {
   }
 
   try {
-    // 1. Сначала создаём само задание.
+    const uploaded = [];
+
+    // 1. Сначала загружаем файлы: ошибка не должна оставить задание
+    // без вложений и спровоцировать повторное создание.
+    for(const file of files){
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const media = await window.apiFetch("/api/upload", {
+        method: "POST",
+        body: fd
+      });
+
+      uploaded.push(media.filename);
+    }
+
+    // 2. Создаём задание.
     const created = await API("/api/tasks", {
       method: "POST",
-      headers: {"Content-Type":"application/json", ...authHeaders()},
+      headers: {"Content-Type":"application/json"},
       body: JSON.stringify({
         address_id: Number(addrId),
         description: desc
@@ -438,39 +479,25 @@ window.createTask = async () => {
     });
 
     const taskId = created.task_id;
-    const uploaded = [];
-
-    // 2. Загружаем выбранные файлы через общий механизм /api/upload.
-    for(const file of files){
-      const fd = new FormData();
-      fd.append("file", file);
-
-      const uploadResponse = await fetch("/api/upload", {
-        method: "POST",
-        headers: authHeaders(),
-        body: fd
-      });
-
-      if(!uploadResponse.ok){
-        let message = "Ошибка загрузки файла";
-        try {
-          const err = await uploadResponse.json();
-          message = err.detail || message;
-        } catch(e) {}
-        throw new Error(message);
-      }
-
-      const media = await uploadResponse.json();
-      uploaded.push(media.filename);
-    }
 
     // 3. Привязываем временные файлы к заданию.
     if(uploaded.length){
-      await API(`/api/tasks/${taskId}/media`, {
-        method: "POST",
-        headers: {"Content-Type":"application/json", ...authHeaders()},
-        body: JSON.stringify({filenames: uploaded})
-      });
+      try {
+        await API(`/api/tasks/${taskId}/media`, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({filenames: uploaded})
+        });
+      } catch(mediaError) {
+        if(mediaInput) mediaInput.value = "";
+        closeCreateTaskModal();
+        toast(
+          `Задание №${taskId} создано, но вложения не прикрепились: ${mediaError.message}`,
+          true
+        );
+        loadTasks();
+        return;
+      }
     }
 
     toast("✓ Задание создано");
@@ -495,14 +522,43 @@ document.getElementById("taskCity").addEventListener("change", () => {
   document.getElementById("taskAddrList").innerHTML = "";
 });
 
-document.getElementById("taskAddrSearch").addEventListener("input", async e => {
+let taskAddressSearchController = null;
+
+const searchTaskAddresses = async query => {
   const city = document.getElementById("taskCity").value;
-  if(!city) return;
-  const rows = await API(`/api/addresses?city=${encodeURIComponent(city)}&q=${encodeURIComponent(e.target.value)}`);
-  document.getElementById("taskAddrList").innerHTML = rows.map(r => 
-    `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%" 
-      onclick="pickTaskAddr(${r.id}, '${r.address_name.replace(/'/g, "\\'")}')">${r.address_name}</button>`
-  ).join("");
+  const list = document.getElementById("taskAddrList");
+
+  if(!city) {
+    list.innerHTML = "";
+    return;
+  }
+
+  taskAddressSearchController?.abort();
+  const controller = new AbortController();
+  taskAddressSearchController = controller;
+
+  try {
+    const rows = await API(
+      `/api/addresses?city=${encodeURIComponent(city)}&q=${encodeURIComponent(query)}`,
+      {signal: controller.signal}
+    );
+
+    if(controller !== taskAddressSearchController) return;
+
+    list.innerHTML = rows.map(r =>
+      `<button type="button" class="btn secondary" style="margin:4px 0;padding:10px;text-align:left;font-size:14px;width:100%"
+        onclick="pickTaskAddr(${Number(r.id)}, ${esc(JSON.stringify(String(r.address_name || "")))})">${esc(r.address_name)}</button>`
+    ).join("");
+  } catch(e) {
+    if(e.name === "AbortError") return;
+    toast(e.message || "Не удалось загрузить адреса", true);
+  }
+};
+
+const debouncedTaskAddressSearch = window.debounce(searchTaskAddresses, 250);
+
+document.getElementById("taskAddrSearch").addEventListener("input", e => {
+  debouncedTaskAddressSearch(e.target.value);
 });
 
 window.pickTaskAddr = (id, name) => {
@@ -522,7 +578,7 @@ document.getElementById("statusFilter").addEventListener("click", e => {
 (async () => {
   const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
   if(!me){ location.href = "/"; return; }
-  currentRole = me.role;
+  currentRole = getBaseRole(me.role);
   myLogin = me.login;
   document.getElementById("whoami").textContent = me.login + " (" + me.role_label + ")";
   

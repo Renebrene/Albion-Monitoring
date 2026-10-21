@@ -1,18 +1,4 @@
-const API = (path, opts = {}) =>
-  fetch(path, opts).then(async r => {
-    if (r.status === 401) {
-      localStorage.clear();
-      location.href = "/";
-    }
-
-    const data = await r.json().catch(() => ({}));
-
-    if (!r.ok) {
-      throw new Error(data.detail || "Ошибка");
-    }
-
-    return data;
-  });
+const API = (path, opts = {}) => window.apiFetch(path, opts);
 
 const authHeaders = () => ({
   "Authorization": "Bearer " + localStorage.getItem("token")
@@ -273,26 +259,10 @@ const uploadCrewMedia = async files => {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch("/api/upload", {
+    const data = await window.apiFetch("/api/upload", {
       method: "POST",
-      headers: authHeaders(),
       body: formData
     });
-
-    if (response.status === 401) {
-      localStorage.clear();
-      location.href = "/";
-      return [];
-    }
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(
-        data.detail ||
-        `Ошибка загрузки файла: ${file.name}`
-      );
-    }
 
     if (data.filename) {
       uploaded.push(data.filename);

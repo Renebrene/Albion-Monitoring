@@ -1365,10 +1365,13 @@
 
       <select id="newUserRole">
         <option value="service">Сервис</option>
+        <option value="staff">Бригада (профиль Сервис)</option>
         <option value="director">Директор</option>
+        <option value="curator">Куратор (профиль Директор)</option>
         <option value="crew">Экипаж</option>
         <option value="head">Руководитель</option>
-        <option value="admin">Администратор</option>
+        <option value="admin">Админ</option>
+        <option value="administrator">Администратор (профиль Админ)</option>
       </select>
 
       <button
@@ -1436,6 +1439,9 @@
           </button>
           <button class="type-filter" data-filter="monitoring">
             Мониторинг
+          </button>
+          <button class="type-filter" data-filter="crew_report">
+            Экипаж
           </button>
         </div>
       </div>
@@ -1551,6 +1557,14 @@
         </div>
 
       </div>
+
+      <button
+        type="button"
+        class="btn secondary"
+        onclick="resetFeedFilters()"
+        style="width:100%;margin-top:12px"
+      >Сбросить фильтры</button>
+
     </div>
 
   </div>
@@ -1569,6 +1583,7 @@
       </button>
 
     <div class="stats-panel" id="statsPanel">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">По загруженным данным и фильтру</div>
 
       <div class="stats-section">
         <div class="stats-title">ТИП</div>
@@ -1725,6 +1740,13 @@
 
 
   <div id="feed"></div>
+  <button
+    type="button"
+    id="loadMoreFeedBtn"
+    class="btn secondary"
+    onclick="loadMoreFeed()"
+    style="display:none;width:100%;margin-top:16px"
+  >Показать ещё</button>
 
 </div>
 
@@ -1836,8 +1858,65 @@
 
 </div>
 
+<div id="passwordModal" class="modal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span>Сменить пароль</span>
+      <button
+        type="button"
+        class="modal-close"
+        onclick="closePasswordModal()"
+      >×</button>
+    </div>
+
+    <div class="modal-body">
+      <div
+        id="passwordUser"
+        style="font-size:13px;color:var(--muted);margin-bottom:12px"
+      ></div>
+
+      <label for="passwordNew">Новый пароль</label>
+      <input
+        id="passwordNew"
+        type="password"
+        autocomplete="new-password"
+        placeholder="Введите новый пароль"
+      >
+
+      <label for="passwordConfirm">Повторите пароль</label>
+      <input
+        id="passwordConfirm"
+        type="password"
+        autocomplete="new-password"
+        placeholder="Повторите новый пароль"
+      >
+
+      <div
+        id="passwordError"
+        style="display:none;color:#dc2626;font-size:12px;font-weight:600;margin:4px 0 12px"
+      ></div>
+
+      <div class="modal-footer">
+        <button
+          type="button"
+          class="cancel-btn"
+          onclick="closePasswordModal()"
+        >Отмена</button>
+
+        <button
+          type="button"
+          class="create-btn"
+          id="passwordSaveBtn"
+          onclick="submitPasswordChange()"
+        >Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <style>
-    .modal-body input[type="text"] {
+    .modal-body input[type="text"],
+    .modal-body input[type="password"] {
       width: 100%;
       box-sizing: border-box;
       border: 1px solid #d1d5db;
@@ -2604,10 +2683,11 @@
     }
 
 </style>
-<script src="/static/auth.js?v=1"></script>
-<script src="/static/media.js?v=1"></script>
-<script src="/static/admin.js?v=114"></script>
-<script src="/static/admin-settings.js?v=quota-settings-1"></script>
+<script src="/static/auth.js?v=5"></script>
+<script src="/static/filter_state.js?v=1"></script>
+<script src="/static/media.js?v=2"></script>
+<script src="/static/admin.js?v=123"></script>
+<script src="/static/admin-settings.js?v=quota-settings-4"></script>
 
 </body>
 </html>

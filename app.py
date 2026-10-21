@@ -487,7 +487,7 @@ def tasks_page(request: Request):
 def auth_sessions(request: Request):
     user = get_current_user(request)
 
-    if user.get("role") != "admin":
+    if get_base_role(user.get("role", "")) != "admin":
         raise HTTPException(
             status_code=403,
             detail="Доступ только для администратора",
@@ -1384,7 +1384,7 @@ def create_task(data: TaskIn, request: Request):
             (
                 data.address_id,
                 user["sub"],
-                user["role"],
+                get_base_role(user["role"]),
                 data.description.strip(),
                 1 if data.is_important else 0,
                 "open",
@@ -1454,7 +1454,7 @@ async def add_task_media(
             )
 
         if (
-            user["role"] == "service"
+            get_base_role(user["role"]) == "service"
             and task["workflow_status"] not in ("open", "rework")
         ):
             raise HTTPException(
@@ -1559,7 +1559,7 @@ def list_tasks(
     manufacturer: Optional[str] = None,
 ):
     user = get_current_user(request)
-    if user["role"] == "service" and status != "open":
+    if get_base_role(user["role"]) == "service" and status != "open":
         status = "open"
 
     with get_db() as conn:
@@ -1586,27 +1586,87 @@ def list_tasks(
         sql += " ORDER BY t.created_at DESC"
         rows = conn.execute(sql, params).fetchall()
 
+        import json
+
         tasks = []
+        task_ids = [row["id"] for row in rows]
+        media_by_task = {task_id: [] for task_id in task_ids}
+        comments_by_task = {task_id: [] for task_id in task_ids}
+
+        # Batch media and comments instead of N+1 queries per task.
+        for start in range(0, len(task_ids), 500):
+            chunk = task_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+
+            media_rows = conn.execute(
+                f"""
+                SELECT task_id, filename, media_type, original_filename
+                FROM media
+                WHERE task_id IN ({placeholders})
+                  AND report_id IS NULL
+                ORDER BY created_at, id
+                """,
+                chunk,
+            ).fetchall()
+            for media in media_rows:
+                media_by_task[media["task_id"]].append({
+                    "url": f"/api/media/{media['filename']}",
+                    "type": media["media_type"],
+                    "filename": media["original_filename"] or media["filename"],
+                })
+
+            comment_rows = conn.execute(
+                f"""
+                SELECT c.task_id, c.id, c.text, c.media_json, c.created_at,
+                       u.login, u.role
+                FROM comments c
+                JOIN users u ON u.id = c.user_id
+                WHERE c.task_id IN ({placeholders})
+                ORDER BY c.created_at ASC, c.id ASC
+                """,
+                chunk,
+            ).fetchall()
+            for comment in comment_rows:
+                comments_by_task[comment["task_id"]].append({
+                    "id": comment["id"],
+                    "text": comment["text"],
+                    "media": json.loads(comment["media_json"]) if comment["media_json"] else [],
+                    "created_at": comment["created_at"],
+                    "author": comment["login"],
+                    "role": comment["role"],
+                    "is_director_comment": False,
+                })
+
+            director_rows = conn.execute(
+                f"""
+                SELECT dc.item_id AS task_id, dc.id, dc.text, dc.media_json,
+                       dc.created_at, u.login
+                FROM director_comments dc
+                JOIN users u ON u.id = dc.user_id
+                WHERE dc.item_type = 'task'
+                  AND dc.item_id IN ({placeholders})
+                ORDER BY dc.created_at ASC, dc.id ASC
+                """,
+                chunk,
+            ).fetchall()
+            for comment in director_rows:
+                comments_by_task[comment["task_id"]].append({
+                    "id": comment["id"],
+                    "text": comment["text"],
+                    "media": json.loads(comment["media_json"]) if comment["media_json"] else [],
+                    "created_at": comment["created_at"],
+                    "author": comment["login"],
+                    "role": "director",
+                    "is_director_comment": True,
+                })
+
         for row in rows:
             task = dict(row)
-            media = conn.execute(
-                """
-                SELECT filename, media_type, original_filename
-                FROM media
-                WHERE task_id = ? AND report_id IS NULL
-                ORDER BY created_at
-                """,
-                (task["id"],),
-            ).fetchall()
-
-            task["media"] = [
-                {
-                    "url": f"/api/media/{m['filename']}",
-                    "type": m["media_type"],
-                    "filename": m["original_filename"] or m["filename"],
-                }
-                for m in media
-            ]
+            task["media"] = media_by_task.get(task["id"], [])
+            task["comments"] = sorted(
+                comments_by_task.get(task["id"], []),
+                key=lambda item: item["created_at"],
+            )
 
             if task["status"] == "done":
                 task["urgency"] = "done"
@@ -1666,7 +1726,10 @@ def get_task_for_workflow(conn, task_id: int):
 
 
 def enforce_director_task_scope(user: dict, task) -> None:
-    if get_base_role(user["role"]) == "director" and task["created_by_role"] != "director":
+    if (
+        get_base_role(user["role"]) == "director"
+        and get_base_role(task["created_by_role"] or "") != "director"
+    ):
         raise HTTPException(
             status_code=403,
             detail="Директор может проверять только задания, созданные директором",
@@ -2144,7 +2207,16 @@ def list_users_api(request: Request):
 @app.post("/api/users")
 def create_user_api(data: UserIn, request: Request):
     require_any(request, ["admin"])
-    if data.role not in ("admin", "service", "director", "crew", "head"):
+    if data.role not in (
+        "admin",
+        "service",
+        "director",
+        "crew",
+        "head",
+        "staff",
+        "administrator",
+        "curator",
+    ):
         raise HTTPException(status_code=400, detail="Неверная роль")
     with get_db() as conn:
         exists = conn.execute("SELECT 1 FROM users WHERE login = ?", (data.login,)).fetchone()
@@ -2221,7 +2293,7 @@ def get_comments(task_id: int, request: Request):
 def add_comment(data: CommentIn, request: Request):
     user = get_current_user(request)
     import json
-    if user["role"] == "director":
+    if get_base_role(user["role"]) == "director":
         raise HTTPException(
             status_code=403,
             detail="Директор пишет только отдельные комментарии"
@@ -2250,7 +2322,7 @@ def add_comment(data: CommentIn, request: Request):
             )
 
         if (
-            user["role"] == "service"
+            get_base_role(user["role"]) == "service"
             and task["workflow_status"] not in ("open", "rework")
         ):
             raise HTTPException(
@@ -2451,7 +2523,7 @@ def send_monitoring(data: ReportIn, request: Request):
             )
 
         # Комментарий директора хранится отдельно
-        if user["role"] == "director":
+        if get_base_role(user["role"]) == "director":
             cursor = conn.execute(
                 """
                 INSERT INTO director_comments
@@ -2634,9 +2706,7 @@ class DirectorCommentIn(BaseModel):
 @app.post("/api/director/comments")
 def add_director_comment(data: DirectorCommentIn, request: Request):
     """Директор оставляет комментарий"""
-    user = get_current_user(request)
-    if user["role"] not in ("admin", "director"):
-        raise HTTPException(status_code=403, detail="Только админ или директор")
+    user = require_any(request, ["admin", "director"])
     if data.item_type not in ("task", "monitoring"):
         raise HTTPException(status_code=400, detail="Неверный тип")
     if not data.text.strip() and not data.media:
@@ -2754,43 +2824,25 @@ def head_page(request: Request):
 
 @app.get("/staff", response_class=HTMLResponse)
 def staff_page(request: Request):
-    return templates.TemplateResponse(
-        "role_app.html",
-        {
-            "request": request,
-            "role": "staff",
-            "role_label": "Бригада",
-        },
-    )
+    # staff — функциональный профиль service.
+    return templates.TemplateResponse("client.html", {"request": request})
 
 
 @app.get("/administrator", response_class=HTMLResponse)
 def administrator_page(request: Request):
-    return templates.TemplateResponse(
-        "role_app.html",
-        {
-            "request": request,
-            "role": "administrator",
-            "role_label": "Администратор",
-        },
-    )
+    # administrator — функциональный профиль admin.
+    return templates.TemplateResponse("admin.html", {"request": request})
 
 
 @app.get("/curator", response_class=HTMLResponse)
 def curator_page(request: Request):
-    return templates.TemplateResponse(
-        "role_app.html",
-        {
-            "request": request,
-            "role": "curator",
-            "role_label": "Куратор",
-        },
-    )
+    # curator — функциональный профиль director.
+    return templates.TemplateResponse("director.html", {"request": request})
 
 
 # ========== ЕДИНАЯ ЛЕНТА (МОНИТОРИНГ + ЗАДАНИЯ) ==========
 @app.get("/api/feed")
-def get_unified_feed(request: Request):
+def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
     """Единая лента заданий и мониторингов.
 
     Задание = отдельная карточка по task.id.
@@ -2806,6 +2858,12 @@ def get_unified_feed(request: Request):
 
     from datetime import datetime
     import json
+
+    # Unified feed merges three independent tables, so pagination is applied
+    # after merge+sort. Fetch enough rows from each type to cover the page.
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    fetch_limit = limit + offset
 
     with get_db() as conn:
         result = []
@@ -2834,8 +2892,8 @@ def get_unified_feed(request: Request):
             JOIN users u ON u.id = t.created_by
             WHERE t.hidden = 0
             ORDER BY t.created_at DESC
-            LIMIT 300
-        """).fetchall()
+            LIMIT ?
+        """, (fetch_limit,)).fetchall()
 
         for task in tasks:
             item = {
@@ -2848,14 +2906,16 @@ def get_unified_feed(request: Request):
                 "address_name": task["address_name"],
                 "manufacturer": task["manufacturer"],
                 "author": task["author"],
-                "author_role": task["author_role"],
+                "author_role": get_base_role(task["author_role"] or ""),
                 "status": task["status"],
                 "workflow_status": task["workflow_status"],
                 "workflow_status_label": TASK_WORKFLOW_STATUSES.get(
                     task["workflow_status"],
                     task["workflow_status"],
                 ),
-                "created_by_role": task["created_by_role"],
+                "created_by_role": get_base_role(
+                    task["created_by_role"] or ""
+                ),
                 "is_important": bool(task["is_important"]),
                 "close_reason": task["close_reason"],
                 "media": [],
@@ -3009,8 +3069,8 @@ def get_unified_feed(request: Request):
               AND r.hidden = 0
               AND a.active = 1
             ORDER BY r.created_at DESC
-            LIMIT 300
-        """).fetchall()
+            LIMIT ?
+        """, (fetch_limit,)).fetchall()
 
         for r in monitoring_reports:
             report_id = r["id"]
@@ -3105,6 +3165,7 @@ def get_unified_feed(request: Request):
                 "address_name": r["address_name"],
                 "manufacturer": r["manufacturer"],
                 "author": r["login"],
+                "author_role": get_base_role(r["role"] or ""),
 
                 "status": "open",
                 "is_important": False,
@@ -3130,7 +3191,7 @@ def get_unified_feed(request: Request):
         # =========================================================
         # Отчёты экипажа видят только Admin и Director.
         # Они идут отдельным типом crew_report.
-        if user.get("role") in ("admin", "director", "head"):
+        if get_base_role(user.get("role", "")) in ("admin", "director", "head"):
             crew_reports = conn.execute("""
                 SELECT
                     cr.id,
@@ -3151,8 +3212,8 @@ def get_unified_feed(request: Request):
                 WHERE a.active = 1
                   AND cr.hidden = 0
                 ORDER BY cr.created_at DESC
-                LIMIT 300
-            """).fetchall()
+                LIMIT ?
+            """, (fetch_limit,)).fetchall()
 
             for cr in crew_reports:
                 report_id = cr["id"]
@@ -3238,7 +3299,7 @@ def get_unified_feed(request: Request):
                     "address_name": cr["address_name"],
                     "manufacturer": cr["manufacturer"],
                     "author": cr["crew_login"],
-                    "author_role": cr["crew_role"],
+                    "author_role": get_base_role(cr["crew_role"] or ""),
                     "status": "open",
                     "is_important": False,
                     "close_reason": None,
@@ -3293,7 +3354,14 @@ def get_unified_feed(request: Request):
             reverse=True
         )
 
-        return result
+        page = result[offset:offset + limit]
+
+        return {
+            "items": page,
+            "has_more": len(result) > offset + limit,
+            "limit": limit,
+            "offset": offset,
+        }
 
 # ==========================================================
 

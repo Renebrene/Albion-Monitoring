@@ -121,26 +121,13 @@ function roleAuthHeaders() {
 
 
 async function roleApi(url, options = {}) {
-    const response = await fetch(url, {
+    return window.apiFetch(url, {
         ...options,
         headers: {
-            ...roleAuthHeaders(),
+            "Content-Type": "application/json",
             ...(options.headers || {}),
         },
     });
-
-    if (response.status === 401) {
-        localStorage.clear();
-        location.href = "/login";
-        throw new Error("Сессия истекла");
-    }
-
-    if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.detail || `Ошибка ${response.status}`);
-    }
-
-    return response.json();
 }
 
 
@@ -1014,23 +1001,10 @@ async function uploadMonitoringFile(file) {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch("/api/upload", {
+    const data = await window.apiFetch("/api/upload", {
         method: "POST",
-        headers: {
-            Authorization:
-                `Bearer ${localStorage.getItem("token") || ""}`,
-        },
         body: formData,
     });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-        throw new Error(
-            data.detail ||
-            `Ошибка загрузки файла: ${response.status}`
-        );
-    }
 
     return {
         filename: data.filename,
@@ -1256,7 +1230,8 @@ function initRoleFilters() {
 
 
 async function reloadRoleFeed() {
-    const items = await roleApi("/api/feed");
+    const data = await roleApi("/api/feed");
+    const items = Array.isArray(data) ? data : (data.items || []);
 
     roleAllFeed = Array.isArray(items)
         ? items
@@ -1298,7 +1273,8 @@ async function initRoleApp() {
             whoami.textContent = me.login || "";
         }
 
-        const items = await roleApi("/api/feed");
+        const data = await roleApi("/api/feed");
+        const items = Array.isArray(data) ? data : (data.items || []);
 
         roleAllFeed = Array.isArray(items)
             ? items

@@ -727,6 +727,13 @@
         </div>
       </div>
 
+      <button
+        type="button"
+        class="btn secondary"
+        onclick="resetFeedFilters()"
+        style="width:100%;margin-top:12px"
+      >Сбросить фильтры</button>
+
     </div>
 
   </div>
@@ -739,6 +746,7 @@
       </button>
 
     <div class="stats-panel" id="statsPanel">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">По загруженным данным и фильтру</div>
 
       <div class="stats-section">
         <div class="stats-title">ЗАДАНИЯ</div>
@@ -812,6 +820,13 @@
   </div>
 
 <div id="feed" class="feed-container"></div>
+<button
+  type="button"
+  id="loadMoreFeedBtn"
+  class="btn secondary"
+  onclick="loadMoreFeed()"
+  style="display:none;width:100%;margin-top:16px"
+>Показать ещё</button>
 </div>
 
 <!-- Модалка: Настройки Админа -->
@@ -829,7 +844,7 @@
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
       <input id="newLogin" placeholder="Логин" style="flex:1;min-width:120px;margin:0">
       <input id="newPassword" type="password" placeholder="Пароль" style="flex:1;min-width:120px;margin:0">
-      <select id="newRole" style="flex:1;min-width:120px;margin:0"><option value="service">Сервис</option><option value="director">Руководитель</option><option value="admin">Админ</option></select>
+      <select id="newRole" style="flex:1;min-width:120px;margin:0"><option value="service">Сервис</option><option value="staff">Бригада</option><option value="director">Руководитель</option><option value="curator">Куратор</option><option value="crew">Экипаж</option><option value="head">Руководитель отчётов</option><option value="admin">Админ</option><option value="administrator">Администратор</option></select>
       <button class="btn" style="width:auto;margin:0;padding:10px 20px" onclick="addUser()">Добавить</button>
     </div>
     <div id="usersList"></div>
@@ -862,7 +877,7 @@
       Можно прикрепить до 10 файлов
     </div>
 
-    <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeCreateTaskModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="createTask()" style="flex:1;margin:0">Создать</button></div>
+    <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeCreateTaskModal()" style="flex:1;margin:0">Отмена</button><button id="createTaskSubmitBtn" class="btn" onclick="createTask()" style="flex:1;margin:0">Создать</button></div>
   </div>
 </div>
 
@@ -920,14 +935,15 @@
       Можно прикрепить до 10 файлов
     </div>
 
-    <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeMonitoringModal()" style="flex:1;margin:0">Отмена</button><button class="btn" onclick="createMonitoring()" style="flex:1;margin:0;background:#0ea5e9">Отправить</button></div>
+    <div style="display:flex;gap:8px"><button class="btn secondary" onclick="closeMonitoringModal()" style="flex:1;margin:0">Отмена</button><button id="monitoringSubmitBtn" class="btn" onclick="createMonitoring()" style="flex:1;margin:0;background:#0ea5e9">Отправить</button></div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
-<script src="/static/auth.js?v=1"></script>
-<script src="/static/media.js?v=1"></script>
-<script src="/static/client.js?v=110"></script>
+<script src="/static/auth.js?v=5"></script>
+<script src="/static/filter_state.js?v=1"></script>
+<script src="/static/media.js?v=2"></script>
+<script src="/static/client.js?v=120"></script>
 </body></html>
 
 <style>

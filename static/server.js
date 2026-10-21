@@ -1,10 +1,6 @@
-const API = (path, opts={}) => fetch(path, opts).then(async r => {
-  if(r.status === 401){ localStorage.clear(); location.href = "/"; }
-  const data = await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data.detail || "Ошибка");
-  return data;
-});
+const API = (path, opts={}) => window.apiFetch(path, opts);
 const authHeaders = () => ({ "Authorization": "Bearer " + localStorage.getItem("token") });
+const esc = value => window.escapeHtml(value);
 const toast = (msg, err=false) => {
   const t = document.getElementById("toast");
   t.textContent = msg; t.className = "toast" + (err?" err":"");
@@ -25,22 +21,22 @@ const render = rows => {
   feed.innerHTML = rows.map(r => {
     const mediaHtml = r.media && r.media.length ? `
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">
-        ${r.media.map(m => m.type === 'video' 
-          ? `<video src="${m.url}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" controls></video>`
-          : `<img src="${m.url}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" onclick="window.open('${m.url}','_blank')">`
+        ${r.media.map(m => m.type === 'video'
+          ? `<video src="${esc(m.url)}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" controls></video>`
+          : `<img src="${esc(m.url)}" data-open-src="${esc(m.url)}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" onclick="window.open(this.dataset.openSrc,'_blank')">`
         ).join("")}
       </div>` : "";
     
     return `
       <div class="card">
-        <div class="city">${r.city} ${r.manufacturer ? '· '+r.manufacturer : ''}</div>
-        <div class="addr">${r.address_name}</div>
+        <div class="city">${esc(r.city)} ${r.manufacturer ? '· '+esc(r.manufacturer) : ''}</div>
+        <div class="addr">${esc(r.address_name)}</div>
         <div class="meta">
-          <span>🕒 ${fmtDate(r.created_at)}</span>
-          <span>👤 ${r.author}</span>
+          <span>🕒 ${esc(fmtDate(r.created_at))}</span>
+          <span>👤 ${esc(r.author)}</span>
           ${r.task_id ? '<span style="color:var(--primary);font-weight:600">↳ Ответ на задание</span>' : ''}
         </div>
-        <div class="text">${r.text.replace(/</g,"&lt;")}</div>
+        <div class="text">${esc(r.text).replace(/\n/g,"<br>")}</div>
         ${mediaHtml}
       </div>
     `;
@@ -53,9 +49,17 @@ window.loadReports = async () => {
   const m = document.getElementById("fManuf").value; if(m) params.set("manufacturer", m);
   const f = document.getElementById("fFrom").value; if(f) params.set("date_from", f);
   const t = document.getElementById("fTo").value; if(t) params.set("date_to", t);
-  
-  const rows = await API("/api/reports?"+params.toString(), {headers: authHeaders()});
-  render(rows);
+
+  try {
+    const rows = await API("/api/reports?"+params.toString(), {headers: authHeaders()});
+    render(rows);
+  } catch(error) {
+    const feed = document.getElementById("feed");
+    if(feed) {
+      feed.innerHTML = `<div class="empty" style="text-align:center;color:var(--err);padding:40px">Ошибка загрузки отчётов: ${esc(error.message)}</div>`;
+    }
+    toast(error.message || "Не удалось загрузить отчёты", true);
+  }
 };
 
 window.exportExcel = async () => {
@@ -77,6 +81,11 @@ window.exportExcel = async () => {
     const response = await fetch("/api/export/excel?" + params.toString(), {
       headers: authHeaders(),
     });
+    if(response.status === 401) {
+      localStorage.clear();
+      location.href = "/";
+      throw new Error("Сессия истекла");
+    }
     if(!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || `Ошибка экспорта (${response.status})`);
@@ -103,7 +112,8 @@ window.exportExcel = async () => {
 
 (async () => {
   const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
-  if(!me || (me.role !== "admin" && me.role !== "director")){ location.href = "/"; return; }
+  const baseRole = me ? window.getBaseRole(me.role) : null;
+  if(!me || (baseRole !== "admin" && baseRole !== "director")){ location.href = "/"; return; }
   document.getElementById("whoami").textContent = me.login + " (" + me.role_label + ")";
 
   const cities = await API("/api/cities");

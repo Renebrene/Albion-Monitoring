@@ -28,7 +28,7 @@
 | `director` | Директорская лента, создание/проверка заданий и комментарии |
 | `crew` | Отправка отдельных отчётов Экипажа |
 | `head` | Просмотр отчётов Экипажа и комментарии к ним |
-| `staff`, `administrator`, `curator` | Новые экранные роли с функциональными профилями `service`, `admin`, `director` соответственно |
+| `staff`, `administrator`, `curator` | Функциональные профили `service`, `admin`, `director`; используют те же страницы (`/client`, `/admin`, `/director`) и серверные base-role проверки |
 
 Доступ к API проверяется на сервере по Bearer JWT и роли. Скрытая кнопка в UI не заменяет серверную проверку.
 
@@ -132,7 +132,7 @@ SQLite содержит основные сущности:
 - **Фото/видео:** auth `POST /api/upload`, auth `GET /api/media/{filename}`.
 - **Мониторинг/команды:** reports, `/api/monitoring`, crew reports, head reports/comments, director feed/comments.
 - **Задачи:** create/list/update, media attach, `complete/approve/rework/close`, status history, hide/soft-delete, task comments.
-- **Сводные данные:** `GET /api/feed`, `GET /api/export/excel`, public liveness `GET /healthz`.
+- **Сводные данные:** `GET /api/feed` (пагинация `limit`/`offset`, ответ `{items, has_more, limit, offset}`), `GET /api/export/excel`, public liveness `GET /healthz`.
 
 Все медиа URL теперь требуют Bearer; ZIP API нет. Пользовательские пароли и password hashes не возвращаются API.
 

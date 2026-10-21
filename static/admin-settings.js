@@ -1,35 +1,15 @@
 (() => {
-  const API_SETTINGS = async (url, options = {}) => {
-    const token = localStorage.getItem("token");
-
-    const headers = {
-      ...(options.headers || {}),
-      ...(token ? { "Authorization": `Bearer ${token}` } : {})
-    };
-
-    const res = await fetch(url, {
-      ...options,
-      headers
-    });
-
-    if (!res.ok) {
-      let msg = `Ошибка ${res.status}`;
-      try {
-        const data = await res.json();
-        msg = data.detail || msg;
-      } catch {}
-      throw new Error(msg);
-    }
-
-    return res.json();
-  };
+  const API_SETTINGS = (url, options = {}) => window.apiFetch(url, options);
 
   const roleNames = {
     admin: "Администратор",
     director: "Директор",
     service: "Сервис",
     crew: "Экипаж",
-    head: "Руководитель"
+    head: "Руководитель",
+    staff: "Бригада",
+    administrator: "Администратор",
+    curator: "Куратор"
   };
 
   const MIB = 1024 * 1024;
@@ -178,18 +158,82 @@
     renderUsers(users);
   }
 
-  async function changePassword(userId, login) {
-    const password = prompt(`Новый пароль для пользователя «${login}»:`);
+  let passwordUserId = null;
+  let passwordUserLogin = "";
 
-    if (password === null) return;
+  function passwordModal() {
+    return document.getElementById("passwordModal");
+  }
+
+  function showPasswordError(message) {
+    const error = document.getElementById("passwordError");
+    if (!error) return;
+
+    error.textContent = message || "";
+    error.style.display = message ? "block" : "none";
+  }
+
+  function openPasswordModal(userId, login) {
+    const modal = passwordModal();
+    if (!modal) return;
+
+    passwordUserId = userId;
+    passwordUserLogin = login;
+
+    const user = document.getElementById("passwordUser");
+    if (user) user.textContent = `Пользователь: ${login}`;
+
+    ["passwordNew", "passwordConfirm"].forEach(id => {
+      const input = document.getElementById(id);
+      if (input) input.value = "";
+    });
+
+    showPasswordError("");
+    modal.classList.add("show");
+
+    document.getElementById("passwordNew")?.focus();
+  }
+
+  window.closePasswordModal = () => {
+    const modal = passwordModal();
+    if (modal) modal.classList.remove("show");
+
+    passwordUserId = null;
+    passwordUserLogin = "";
+    showPasswordError("");
+  };
+
+  window.submitPasswordChange = async () => {
+    if (passwordUserId === null) return;
+
+    const input = document.getElementById("passwordNew");
+    const confirm = document.getElementById("passwordConfirm");
+    const button = document.getElementById("passwordSaveBtn");
+
+    const password = input ? input.value : "";
+    const confirmation = confirm ? confirm.value : "";
 
     if (!password.trim()) {
-      setStatus("Пароль не может быть пустым", true);
+      showPasswordError("Введите новый пароль");
+      input?.focus();
       return;
     }
 
+    if (password !== confirmation) {
+      showPasswordError("Пароли не совпадают");
+      confirm?.focus();
+      return;
+    }
+
+    showPasswordError("");
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Сохранение...";
+    }
+
     try {
-      await API_SETTINGS(`/api/users/${userId}/password`, {
+      await API_SETTINGS(`/api/users/${passwordUserId}/password`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json"
@@ -199,11 +243,22 @@
         })
       });
 
+      const login = passwordUserLogin;
+      window.closePasswordModal();
       setStatus(`Пароль пользователя «${login}» изменён`);
       setTimeout(() => setStatus(""), 2200);
     } catch (err) {
-      setStatus(err.message || "Не удалось изменить пароль", true);
+      showPasswordError(err.message || "Не удалось изменить пароль");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Сохранить";
+      }
     }
+  };
+
+  function changePassword(userId, login) {
+    openPasswordModal(userId, login);
   }
 
   async function createUser() {
@@ -276,8 +331,8 @@
       return;
     }
 
-    // Настройки доступны только администратору.
-    if (!me || me.role !== "admin") {
+    // Настройки доступны администратору и профилю administrator.
+    if (!me || window.getBaseRole(me.role) !== "admin") {
       toggle.style.display = "none";
       panel.style.display = "none";
       return;
@@ -322,6 +377,27 @@
 
     const quotaSaveButton = document.getElementById("saveQuotasBtn");
     if (quotaSaveButton) quotaSaveButton.addEventListener("click", saveQuotas);
+
+    const modal = passwordModal();
+    if (modal) {
+      modal.addEventListener("click", event => {
+        if (event.target === modal) window.closePasswordModal();
+      });
+    }
+
+    ["passwordNew", "passwordConfirm"].forEach(id => {
+      document.getElementById(id)?.addEventListener("keydown", event => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        window.submitPasswordChange();
+      });
+    });
+
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && modal?.classList.contains("show")) {
+        window.closePasswordModal();
+      }
+    });
   }
 
   if (document.readyState === "loading") {

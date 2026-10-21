@@ -1336,6 +1336,9 @@
           <button class="type-filter" data-filter="monitoring">
             Мониторинг
           </button>
+          <button class="type-filter" data-filter="crew_report">
+            Экипаж
+          </button>
         </div>
       </div>
 
@@ -1450,6 +1453,14 @@
         </div>
 
       </div>
+
+      <button
+        type="button"
+        class="btn secondary"
+        onclick="resetFeedFilters()"
+        style="width:100%;margin-top:12px"
+      >Сбросить фильтры</button>
+
     </div>
 
   </div>
@@ -1468,6 +1479,7 @@
       </button>
 
     <div class="stats-panel" id="statsPanel">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">По загруженным данным и фильтру</div>
 
       <div class="stats-section">
         <div class="stats-title">ЗАДАНИЯ</div>
@@ -1528,6 +1540,13 @@
 
 
   <div id="feed"></div>
+  <button
+    type="button"
+    id="loadMoreFeedBtn"
+    class="btn secondary"
+    onclick="loadMoreFeed()"
+    style="display:none;width:100%;margin-top:16px"
+  >Показать ещё</button>
 
 </div>
 
@@ -1808,9 +1827,10 @@
 }
 
 </style>
-<script src="/static/auth.js?v=1"></script>
-<script src="/static/media.js?v=1"></script>
-<script src="/static/director.js?v=112"></script>
+<script src="/static/auth.js?v=5"></script>
+<script src="/static/filter_state.js?v=1"></script>
+<script src="/static/media.js?v=2"></script>
+<script src="/static/director.js?v=122"></script>
 
 </body>
 </html>

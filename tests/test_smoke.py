@@ -34,7 +34,10 @@ class ApplicationSmokeTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO users (id, login, password_hash, role) VALUES "
                 "(1, 'qa', 'unused', 'admin'), (2, 'service-qa', 'unused', 'service'), "
-                "(3, 'director-qa', 'unused', 'director')"
+                "(3, 'director-qa', 'unused', 'director'), "
+                "(4, 'staff-qa', 'unused', 'staff'), "
+                "(5, 'administrator-qa', 'unused', 'administrator'), "
+                "(6, 'curator-qa', 'unused', 'curator')"
             )
             conn.execute(
                 "INSERT INTO addresses (id, city, address_name, manufacturer) VALUES "
@@ -71,6 +74,11 @@ class ApplicationSmokeTests(unittest.TestCase):
         cls.headers = {"Authorization": f"Bearer {cls.token}"}
         cls.service_headers = {"Authorization": f"Bearer {create_token(2, 'service-qa', 'service')}"}
         cls.director_headers = {"Authorization": f"Bearer {create_token(3, 'director-qa', 'director')}"}
+        cls.staff_headers = {"Authorization": f"Bearer {create_token(4, 'staff-qa', 'staff')}"}
+        cls.administrator_headers = {
+            "Authorization": f"Bearer {create_token(5, 'administrator-qa', 'administrator')}"
+        }
+        cls.curator_headers = {"Authorization": f"Bearer {create_token(6, 'curator-qa', 'curator')}"}
 
     def test_upload_quota_defaults_and_admin_authorization(self):
         defaults = {
@@ -296,6 +304,10 @@ class ApplicationSmokeTests(unittest.TestCase):
         self.assertIn('URL.revokeObjectURL', source)
         self.assertIn("/api/media/", source)
         self.assertNotIn("token=", source)
+        self.assertIn("IntersectionObserver", source)
+        self.assertIn("blobCache", source)
+        self.assertIn('element.removeAttribute("src")', source)
+        self.assertIn("dataset.mediaLoading !== apiPath", source)
 
     def test_upload_uses_admin_configured_per_file_limits(self):
         quotas = {
@@ -620,6 +632,253 @@ class ApplicationSmokeTests(unittest.TestCase):
             self.assertIn(pattern, source)
             self.assertNotIn(r"/\\.(mp4|mov|webm|m4v)$", source)
 
+    def test_list_load_errors_have_visible_state(self):
+        expectations = {
+            "client.js": [
+                "Не удалось загрузить пользователей",
+                "Не удалось загрузить настройки медиа",
+                "if(append || allFeed.length)",
+            ],
+            "tasks.js": ["Ошибка загрузки заданий"],
+            "admin.js": ["if(append || allFeedItems.length)"],
+            "director.js": ["if(append || allFeedItems.length)"],
+            "server.js": ["Ошибка загрузки отчётов"],
+        }
+
+        for name, markers in expectations.items():
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            for marker in markers:
+                self.assertIn(marker, source, f"{name}: missing {marker}")
+
+    def test_tasks_list_embeds_comments_without_per_task_requests(self):
+        task_id = None
+        try:
+            created = self.client.post(
+                "/api/tasks",
+                json={"address_id": 1, "description": "Задание с комментарием"},
+                headers=self.headers,
+            )
+            self.assertEqual(created.status_code, 200)
+            task_id = created.json()["task_id"]
+
+            posted = self.client.post(
+                "/api/comments",
+                json={"task_id": task_id, "text": "Пакетный комментарий", "media": []},
+                headers=self.service_headers,
+            )
+            self.assertEqual(posted.status_code, 200)
+
+            listed = self.client.get(
+                "/api/tasks", params={"status": "open"}, headers=self.headers
+            )
+            self.assertEqual(listed.status_code, 200)
+            task = next(item for item in listed.json() if item["id"] == task_id)
+            self.assertIn("comments", task)
+            self.assertTrue(
+                any(comment["text"] == "Пакетный комментарий" for comment in task["comments"])
+            )
+        finally:
+            if task_id is not None:
+                self._delete_task(task_id)
+
+        source = (APP_DIR / "static" / "tasks.js").read_text(encoding="utf-8")
+        self.assertIn("t.comments", source)
+        self.assertIn("renderChatMessages", source)
+        self.assertNotIn("tasks.forEach(t => loadChat(t.id));", source)
+
+    def test_password_change_uses_masked_modal(self):
+        source = (APP_DIR / "static" / "admin-settings.js").read_text(encoding="utf-8")
+        template = (APP_DIR / "templates" / "admin.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("prompt(", source)
+        self.assertIn("openPasswordModal", source)
+        self.assertIn("submitPasswordChange", source)
+        self.assertIn("Пароли не совпадают", source)
+
+        self.assertIn('id="passwordModal"', template)
+        self.assertIn('id="passwordNew"', template)
+        self.assertIn('type="password"', template)
+        self.assertIn('id="passwordConfirm"', template)
+
+    def test_task_creation_uploads_before_create(self):
+        for name in ("client.js", "admin.js", "director.js"):
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            self.assertIn("Upload first", source, name)
+            self.assertIn("вложения не прикрепились", source, name)
+
+        tasks = (APP_DIR / "static" / "tasks.js").read_text(encoding="utf-8")
+        self.assertIn("Сначала загружаем файлы", tasks)
+        self.assertIn("вложения не прикрепились", tasks)
+
+    def test_search_uses_debounce_and_aborts_stale_requests(self):
+        auth = (APP_DIR / "static" / "auth.js").read_text(encoding="utf-8")
+        self.assertIn("window.debounce", auth)
+
+        for name in ("client.js", "tasks.js"):
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            self.assertIn("new AbortController()", source)
+            self.assertIn("debouncedTaskAddressSearch", source)
+            self.assertIn("signal: controller.signal", source)
+            self.assertIn('if(e.name === "AbortError") return;', source)
+
+        client = (APP_DIR / "static" / "client.js").read_text(encoding="utf-8")
+        director = (APP_DIR / "static" / "director.js").read_text(encoding="utf-8")
+        self.assertIn("window.debounce(applyFilters, 150)", client)
+        self.assertIn("window.debounce(refreshFeed, 150)", director)
+
+    def test_shared_api_fetch_handles_expired_session(self):
+        auth = (APP_DIR / "static" / "auth.js").read_text(encoding="utf-8")
+        self.assertIn("window.apiFetch", auth)
+        self.assertIn("response.status === 401", auth)
+        self.assertIn("localStorage.clear()", auth)
+        self.assertIn('window.location.href = "/"', auth)
+        self.assertIn("Array.isArray(detail)", auth)
+
+        for name in (
+            "client.js",
+            "admin.js",
+            "director.js",
+            "tasks.js",
+            "server.js",
+            "crew.js",
+            "head.js",
+            "admin-settings.js",
+            "role_app.js",
+        ):
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            self.assertIn("window.apiFetch", source, name)
+            self.assertNotIn('fetch("/api/upload"', source, name)
+
+        server = (APP_DIR / "static" / "server.js").read_text(encoding="utf-8")
+        self.assertIn('response.status === 401', server)
+
+    def test_feed_pagination_returns_meta_and_slices(self):
+        first = self.client.get(
+            "/api/feed", params={"limit": 2, "offset": 0}, headers=self.headers
+        )
+        self.assertEqual(first.status_code, 200)
+        first_data = first.json()
+        self.assertEqual(first_data["limit"], 2)
+        self.assertEqual(first_data["offset"], 0)
+        self.assertEqual(len(first_data["items"]), 2)
+        self.assertTrue(first_data["has_more"])
+
+        second = self.client.get(
+            "/api/feed", params={"limit": 2, "offset": 2}, headers=self.headers
+        )
+        second_data = second.json()
+        self.assertEqual(len(second_data["items"]), 2)
+        first_keys = {(item["type"], item["id"]) for item in first_data["items"]}
+        second_keys = {(item["type"], item["id"]) for item in second_data["items"]}
+        self.assertTrue(first_keys.isdisjoint(second_keys))
+
+        bounded = self.client.get(
+            "/api/feed", params={"limit": 100000, "offset": 0}, headers=self.headers
+        )
+        self.assertEqual(bounded.json()["limit"], 500)
+
+    def test_legacy_renderers_escape_user_content(self):
+        auth = (APP_DIR / "static" / "auth.js").read_text(encoding="utf-8")
+        self.assertIn("window.escapeHtml", auth)
+
+        checks = {
+            "client.js": [
+                "esc(item.city)",
+                "esc(item.address_name)",
+                "esc(authorName)",
+                "esc(sourceText)",
+                "esc(name)",
+                "esc(JSON.stringify",
+            ],
+            "tasks.js": [
+                "esc(t.city)",
+                "esc(t.address_name)",
+                "esc(t.description)",
+                "esc(t.author)",
+                "esc(c.author)",
+                "esc(c.text)",
+                "esc(JSON.stringify",
+            ],
+            "server.js": [
+                "esc(r.city)",
+                "esc(r.address_name)",
+                "esc(r.author)",
+                "esc(r.text)",
+            ],
+        }
+
+        for name, expected in checks.items():
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            for marker in expected:
+                self.assertIn(marker, source, f"{name}: missing {marker}")
+
+        client = (APP_DIR / "static" / "client.js").read_text(encoding="utf-8")
+        tasks = (APP_DIR / "static" / "tasks.js").read_text(encoding="utf-8")
+        server = (APP_DIR / "static" / "server.js").read_text(encoding="utf-8")
+        self.assertNotIn("${item.city}", client)
+        self.assertNotIn("${t.city}", tasks)
+        self.assertNotIn("${r.city}", server)
+
+    def test_feed_filters_are_persisted_and_sort_is_type_safe(self):
+        shared = (APP_DIR / "static" / "filter_state.js").read_text(encoding="utf-8")
+        self.assertIn("readFeedFilterParams", shared)
+        self.assertIn("writeFeedFilterParams", shared)
+
+        for name, template_name in (
+            ("client.js", "client.html"),
+            ("admin.js", "admin.html"),
+            ("director.js", "director.html"),
+        ):
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            template = (APP_DIR / "templates" / template_name).read_text(encoding="utf-8")
+
+            self.assertIn("syncFilterUrl", source)
+            self.assertIn("restoreFilterState", source)
+            self.assertIn("resetFeedFilters", source)
+            self.assertIn("typeRank", source)
+            self.assertIn('["open", "rework"]', source)
+            self.assertNotIn('["open", "pending_review", "rework"]', source)
+
+            self.assertIn("/static/filter_state.js", template)
+            self.assertIn("resetFeedFilters()", template)
+            self.assertIn("По загруженным данным и фильтру", template)
+
+        for template_name in ("admin.html", "director.html"):
+            template = (APP_DIR / "templates" / template_name).read_text(encoding="utf-8")
+            self.assertIn('data-filter="crew_report"', template)
+
+    def test_client_action_buttons_are_explicit_and_guarded(self):
+        template = (APP_DIR / "templates" / "client.html").read_text(encoding="utf-8")
+        source = (APP_DIR / "static" / "client.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="monitoringSubmitBtn"', template)
+        self.assertIn('id="createTaskSubmitBtn"', template)
+        self.assertIn('getElementById("monitoringSubmitBtn")', source)
+        self.assertIn('getElementById("createTaskSubmitBtn")', source)
+        self.assertNotIn('#monitoringModal .btn:not(.secondary)', source)
+        self.assertIn('button.textContent = "Создание..."', source)
+
+    def test_crew_report_has_no_director_comment_form(self):
+        for name in ("admin.js", "director.js"):
+            source = (APP_DIR / "static" / name).read_text(encoding="utf-8")
+            self.assertIn("Комментарии к отчётам экипажа доступны Руководителю", source)
+            self.assertIn('if(type === "crew_report")', source)
+
+        source = (APP_DIR / "static" / "director.js").read_text(encoding="utf-8")
+        self.assertIn("!isCrewReport &&", source)
+
+        response = self.client.post(
+            "/api/director/comments",
+            json={
+                "item_type": "crew_report",
+                "item_id": 1,
+                "text": "Неверный тип",
+                "media": [],
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 400)
+
     def test_logout_closes_own_session(self):
         # Create a real session row and bind that ID to the token.
         with get_db() as conn:
@@ -636,6 +895,114 @@ class ApplicationSmokeTests(unittest.TestCase):
                 "SELECT logout_at FROM auth_sessions WHERE id = ?", (session_id,)
             ).fetchone()
         self.assertIsNotNone(row["logout_at"])
+
+    def test_role_profile_pages_use_base_interface(self):
+        staff_page = self.client.get("/staff")
+        self.assertEqual(staff_page.status_code, 200)
+        self.assertIn('id="monitoringBtn"', staff_page.text)
+
+        administrator_page = self.client.get("/administrator")
+        self.assertEqual(administrator_page.status_code, 200)
+        self.assertIn('id="settingsToggle"', administrator_page.text)
+
+        curator_page = self.client.get("/curator")
+        self.assertEqual(curator_page.status_code, 200)
+        self.assertIn('id="feedSearch"', curator_page.text)
+
+    def _delete_task(self, task_id):
+        with get_db() as conn:
+            conn.execute("DELETE FROM task_status_history WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM comments WHERE task_id = ?", (task_id,))
+            conn.execute(
+                "DELETE FROM director_comments WHERE item_type = 'task' AND item_id = ?",
+                (task_id,),
+            )
+            conn.execute("DELETE FROM media WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    def test_curator_task_is_stored_and_reviewed_as_director(self):
+        task_id = None
+        try:
+            created = self.client.post(
+                "/api/tasks",
+                json={"address_id": 1, "description": "Задание куратора"},
+                headers=self.curator_headers,
+            )
+            self.assertEqual(created.status_code, 200)
+            task_id = created.json()["task_id"]
+
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT created_by_role FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+            self.assertEqual(row["created_by_role"], "director")
+
+            closed = self.client.post(
+                f"/api/tasks/{task_id}/close", headers=self.curator_headers
+            )
+            self.assertEqual(closed.status_code, 200)
+        finally:
+            if task_id is not None:
+                self._delete_task(task_id)
+
+    def test_administrator_and_curator_use_director_comments(self):
+        task_id = None
+        try:
+            created = self.client.post(
+                "/api/tasks",
+                json={"address_id": 1, "description": "Задание для комментариев"},
+                headers=self.headers,
+            )
+            self.assertEqual(created.status_code, 200)
+            task_id = created.json()["task_id"]
+
+            for headers in (self.administrator_headers, self.curator_headers):
+                response = self.client.post(
+                    "/api/director/comments",
+                    json={
+                        "item_type": "task",
+                        "item_id": task_id,
+                        "text": "Комментарий профиля",
+                        "media": [],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(response.status_code, 200)
+
+            regular = self.client.post(
+                "/api/comments",
+                json={"task_id": task_id, "text": "Обычный комментарий", "media": []},
+                headers=self.curator_headers,
+            )
+            self.assertEqual(regular.status_code, 403)
+
+            sessions = self.client.get(
+                "/api/auth-sessions", headers=self.administrator_headers
+            )
+            self.assertEqual(sessions.status_code, 200)
+        finally:
+            if task_id is not None:
+                self._delete_task(task_id)
+
+    def test_admin_can_create_new_role_profiles(self):
+        try:
+            for role in ("staff", "administrator", "curator"):
+                response = self.client.post(
+                    "/api/users",
+                    json={
+                        "login": f"created-{role}",
+                        "password": "NewTestPass!",
+                        "role": role,
+                    },
+                    headers=self.headers,
+                )
+                self.assertEqual(response.status_code, 200)
+        finally:
+            with get_db() as conn:
+                conn.execute(
+                    "DELETE FROM users WHERE login IN (?, ?, ?)",
+                    ("created-staff", "created-administrator", "created-curator"),
+                )
 
     @classmethod
     def tearDownClass(cls):
