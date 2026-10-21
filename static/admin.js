@@ -546,7 +546,7 @@ const renderFeed = items => {
 
       if(headComments.length) {
         lastFeedComment = headComments[headComments.length - 1];
-        lastFeedCommentLabel = "Директор";
+        lastFeedCommentLabel = "Руководитель";
       }
     } else if(Array.isArray(item.director_comments) && item.director_comments.length) {
       lastFeedComment =
@@ -880,7 +880,16 @@ const taskActionsHtml =
                 Комментарии к отчётам экипажа доступны Руководителю.
               </div>
             `
-            : `
+            : isTask && ["completed", "closed"].includes(item.workflow_status)
+              ? `
+                <div
+                  class="crew-report-comment-note"
+                  style="margin-top:12px;color:var(--muted);font-size:12px"
+                >
+                  Задание завершено или отменено: комментарии недоступны.
+                </div>
+              `
+              : `
               <div
                 class="chat-input-wrap"
                 onclick="event.stopPropagation()"

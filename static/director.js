@@ -488,7 +488,7 @@ const renderFeed = items => {
 
       if(headComments.length) {
         lastFeedComment = headComments[headComments.length - 1];
-        lastFeedCommentLabel = "Директор";
+        lastFeedCommentLabel = "Руководитель";
       }
     } else if(Array.isArray(item.director_comments) && item.director_comments.length) {
       lastFeedComment =

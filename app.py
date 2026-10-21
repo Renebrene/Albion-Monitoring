@@ -2478,12 +2478,19 @@ def get_monitoring(address_id: int, request: Request):
         
         # Добавляем комментарии директора (видны всем)
         dc_rows = conn.execute("""
-            SELECT dc.id, dc.text, dc.created_at, u.login
+            SELECT dc.id, dc.text, dc.media_json, dc.created_at, u.login
             FROM director_comments dc
             JOIN users u ON u.id = dc.user_id
-            WHERE dc.item_type = 'monitoring' AND dc.item_id = ?
+            WHERE dc.item_type = 'monitoring'
+              AND (
+                  dc.report_id IN (
+                      SELECT id FROM reports
+                      WHERE address_id = ? AND task_id IS NULL
+                  )
+                  OR (dc.report_id IS NULL AND dc.item_id = ?)
+              )
             ORDER BY dc.created_at ASC
-        """, (address_id,)).fetchall()
+        """, (address_id, address_id)).fetchall()
         
         for dc in dc_rows:
             messages.append({

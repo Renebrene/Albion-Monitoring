@@ -1,0 +1,11 @@
+{
+  "name": "albion-monitoring-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun run e2e_roles.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  }
+}

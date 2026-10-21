@@ -777,6 +777,35 @@ class ApplicationSmokeTests(unittest.TestCase):
         )
         self.assertEqual(bounded.json()["limit"], 500)
 
+    def test_legacy_monitoring_endpoint_serializes_director_comment_media(self):
+        text = "E2E monitoring endpoint comment"
+        posted = self.client.post(
+            "/api/director/comments",
+            json={
+                "item_type": "monitoring",
+                "item_id": 1,
+                "text": text,
+                "media": [],
+            },
+            headers=self.director_headers,
+        )
+        self.assertEqual(posted.status_code, 200)
+
+        try:
+            response = self.client.get("/api/monitoring/1", headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            comments = [
+                item for item in response.json()
+                if item.get("is_director_comment") and item.get("text") == text
+            ]
+            self.assertEqual(len(comments), 1)
+            self.assertIsInstance(comments[0]["media"], list)
+        finally:
+            with get_db() as conn:
+                conn.execute(
+                    "DELETE FROM director_comments WHERE text = ?", (text,)
+                )
+
     def test_legacy_renderers_escape_user_content(self):
         auth = (APP_DIR / "static" / "auth.js").read_text(encoding="utf-8")
         self.assertIn("window.escapeHtml", auth)

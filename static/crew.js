@@ -484,7 +484,7 @@ const renderCrewHistory = reports => {
         ? `
           <div class="crew-head-comments">
             <div class="crew-head-comments-title">
-              Комментарии Директора
+              Комментарии Руководителя
             </div>
 
             ${headComments.map(comment => {
@@ -496,7 +496,7 @@ const renderCrewHistory = reports => {
               return `
                 <div class="crew-head-comment">
                   <div class="crew-head-comment-meta">
-                    <b><i>Директор</i></b>
+                    <b><i>Руководитель</i></b>
                     ${comment.created_at ? `
                       <b><i>(${esc(comment.created_at)})</i></b>
                     ` : ""}
@@ -572,7 +572,7 @@ const renderCrewHistory = reports => {
         ${lastHeadComment ? `
           <div class="crew-head-comment-preview">
             <span>
-              <b><i>Директор</i></b>
+              <b><i>Руководитель</i></b>
               ${lastHeadComment.created_at ? `
                 <b><i>(${esc(lastHeadComment.created_at)})</i></b>
               ` : ""}
