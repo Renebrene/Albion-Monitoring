@@ -4,13 +4,16 @@
 """
 import asyncio
 import fcntl
+import ipaddress
+import json
+import logging
 import mimetypes
 from contextlib import asynccontextmanager, contextmanager
 import os
 import tempfile
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List
 from io import BytesIO
@@ -22,14 +25,81 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from PIL import Image
 
-from database import get_db, init_schema, UPLOADS_DIR, PRIVATE_MEDIA_DIR, get_setting, set_setting
+from database import (
+    get_db, init_schema, set_tenant_context, apply_tenant_settings,
+    UPLOADS_DIR, PRIVATE_MEDIA_DIR, get_setting, set_setting,
+)
 from auth import (
-    hash_password, verify_password, create_token,
+    hash_password, verify_password, create_token, token_fingerprint,
     get_current_user, require_role, require_any, get_base_role,
-    ROLE_LABELS, ROLE_HOME,
+    ROLE_LABELS, ROLE_HOME, TOKEN_HOURS,
 )
 
 init_schema()
+
+
+audit_logger = logging.getLogger("albion.audit")
+
+
+def client_ip(request: Request = None):
+    """IP клиента для аудита; некорректные значения (например, имя хоста) отбрасываются."""
+    if request is None or request.client is None:
+        return None
+    host = (request.client.host or "").strip()
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
+
+
+def write_audit(
+    conn,
+    user,
+    action: str,
+    object_type: str = None,
+    object_id=None,
+    before=None,
+    after=None,
+    request: Request = None,
+):
+    """Записывает действие в audit_log; аудит не должен ломать основной сценарий.
+
+    Ошибку аудита нельзя просто проглотить: в PostgreSQL прерванная транзакция
+    превращает последующий COMMIT в ROLLBACK, и тогда теряется вся работа
+    запроса. Поэтому запись идёт через SAVEPOINT и откатывается только она.
+    """
+    savepoint_started = False
+    try:
+        conn.execute("SAVEPOINT audit_write")
+        savepoint_started = True
+        conn.execute(
+            """
+            INSERT INTO audit_log
+                (actor_user_id, legal_entity_id, action, object_type, object_id,
+                 before_json, after_json, ip)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (user or {}).get("sub"),
+                (user or {}).get("legal_entity_id"),
+                action,
+                object_type,
+                str(object_id) if object_id is not None else None,
+                json.dumps(before, ensure_ascii=False) if before is not None else None,
+                json.dumps(after, ensure_ascii=False) if after is not None else None,
+                client_ip(request),
+            ),
+        )
+        conn.execute("RELEASE SAVEPOINT audit_write")
+    except Exception as exc:
+        if savepoint_started:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT audit_write")
+                conn.execute("RELEASE SAVEPOINT audit_write")
+            except Exception:
+                pass
+        audit_logger.warning("Не удалось записать аудит %s: %s", action, exc)
+
 
 app = FastAPI(title="АЛЬБИОН. Мониторинг экранов")
 
@@ -546,39 +616,85 @@ def logout(request: Request):
             """,
             (session_id, user["sub"]),
         )
+        write_audit(conn, user, "auth.logout", "session", session_id, request=request)
         conn.commit()
 
     return {"ok": True}
 
 
 @app.post("/api/login")
-def login(data: LoginIn):
+def login(data: LoginIn, request: Request):
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, login, password_hash, role FROM users WHERE login = ?",
+            """
+            SELECT id, login, password_hash, role, active, token_version, legal_entity_id
+            FROM users
+            WHERE login = ?
+            """,
             (data.login,),
         ).fetchone()
-    if not row or not verify_password(data.password, row["password_hash"]):
-        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
-    # Создаём отдельную сессию авторизации.
-    with get_db() as conn:
+
+        # Контекст запроса — юрлицо входящего: от него зависят RLS-проверки
+        # при записи сессии и аудита.
+        if row:
+            set_tenant_context(
+                row["legal_entity_id"], get_base_role(row["role"]) == "admin"
+            )
+            apply_tenant_settings(conn)
+
+        if not row or not verify_password(data.password, row["password_hash"]):
+            write_audit(conn, None, "auth.login.failed", "user", data.login, request=request)
+            # Отказ входа обязан остаться в аудите: исключение откатит транзакцию.
+            conn.commit()
+            raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+        if not row["active"]:
+            write_audit(
+                conn,
+                {"sub": row["id"], "legal_entity_id": row["legal_entity_id"]},
+                "auth.login.blocked",
+                "user",
+                row["id"],
+                request=request,
+            )
+            conn.commit()
+            raise HTTPException(status_code=403, detail="Пользователь заблокирован")
+
+        # Создаём отдельную серверную сессию авторизации.
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(hours=TOKEN_HOURS)
+        ).strftime("%Y-%m-%d %H:%M:%S")
         cur = conn.execute(
             """
-            INSERT INTO auth_sessions (user_id, login, role)
-            VALUES (?, ?, ?)
+            INSERT INTO auth_sessions (user_id, login, role, expires_at)
+            VALUES (?, ?, ?, ?)
             """,
-            (row["id"], row["login"], row["role"]),
+            (row["id"], row["login"], row["role"], expires_at),
         )
         session_id = cur.lastrowid
-        conn.commit()
 
-    # Привязываем JWT к конкретной сессии.
-    token = create_token(
-        row["id"],
-        row["login"],
-        row["role"],
-        session_id=session_id,
-    )
+        # Привязываем JWT к конкретной сессии и версии прав.
+        token = create_token(
+            row["id"],
+            row["login"],
+            row["role"],
+            session_id=session_id,
+            token_version=row["token_version"],
+            legal_entity_id=row["legal_entity_id"],
+        )
+        conn.execute(
+            "UPDATE auth_sessions SET token_hash = ? WHERE id = ?",
+            (token_fingerprint(token), session_id),
+        )
+        write_audit(
+            conn,
+            {"sub": row["id"], "legal_entity_id": row["legal_entity_id"]},
+            "auth.login",
+            "user",
+            row["id"],
+            request=request,
+        )
+        conn.commit()
 
     return {
         "token": token,
@@ -643,7 +759,7 @@ def get_settings(request: Request):
 
 @app.put("/api/settings/quotas")
 def update_upload_quotas(data: UploadQuotasIn, request: Request):
-    require_any(request, ["admin"])
+    user = require_any(request, ["admin"])
     photo_bytes = parse_quota_bytes(data.photo_max_upload_bytes, PHOTO_UPLOAD_SETTING)
     video_bytes = parse_quota_bytes(data.video_max_upload_bytes, VIDEO_UPLOAD_SETTING)
     storage_bytes = parse_quota_bytes(data.uploads_quota_bytes, STORAGE_QUOTA_SETTING)
@@ -664,6 +780,21 @@ def update_upload_quotas(data: UploadQuotasIn, request: Request):
                 )
         usage = uploads_usage_bytes()
 
+    with get_db() as conn:
+        write_audit(
+            conn,
+            user,
+            "settings.quotas.update",
+            "settings",
+            None,
+            after={
+                "photo_max_upload_bytes": photo_bytes,
+                "video_max_upload_bytes": video_bytes,
+                "uploads_quota_bytes": storage_bytes,
+            },
+            request=request,
+        )
+
     return {
         "ok": True,
         "photo_max_upload_bytes": photo_bytes,
@@ -677,11 +808,21 @@ def update_upload_quotas(data: UploadQuotasIn, request: Request):
 @app.put("/api/settings")
 def update_setting(data: SettingIn, request: Request):
     """Изменить настройки. Изменения квот доступны только администратору."""
-    require_any(request, ["admin"])
+    user = require_any(request, ["admin"])
     if data.key in {"photos_enabled", "videos_enabled"}:
         if data.value not in ("0", "1"):
             raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
         set_setting(data.key, data.value)
+        with get_db() as conn:
+            write_audit(
+                conn,
+                user,
+                "settings.update",
+                "settings",
+                data.key,
+                after={"key": data.key, "value": data.value},
+                request=request,
+            )
         return {"ok": True, "key": data.key, "value": data.value}
 
     quota_keys = {PHOTO_UPLOAD_SETTING, VIDEO_UPLOAD_SETTING, STORAGE_QUOTA_SETTING}
@@ -694,12 +835,25 @@ def update_setting(data: SettingIn, request: Request):
         raise HTTPException(status_code=400, detail="Лимит видео не может превышать 100 MiB")
     with uploads_quota_lock_sync():
         set_setting(data.key, str(value))
+    with get_db() as conn:
+        write_audit(
+            conn,
+            user,
+            "settings.update",
+            "settings",
+            data.key,
+            after={"key": data.key, "value": value},
+            request=request,
+        )
     return {"ok": True, "key": data.key, "value": value, "uploads_usage_bytes": uploads_usage_bytes()}
 
 
 # ---------- Справочники ----------
+# Справочники адресов закрыты авторизацией: без неё не определить юрлицо
+# пользователя, а сам список адресов — данные организации, а не публичные.
 @app.get("/api/cities")
-def cities():
+def cities(request: Request):
+    get_current_user(request)
     with get_db() as conn:
         rows = conn.execute(
             "SELECT DISTINCT city FROM addresses WHERE active = 1 ORDER BY city"
@@ -708,7 +862,8 @@ def cities():
 
 
 @app.get("/api/manufacturers")
-def manufacturers():
+def manufacturers(request: Request):
+    get_current_user(request)
     with get_db() as conn:
         rows = conn.execute(
             "SELECT DISTINCT manufacturer FROM addresses "
@@ -720,11 +875,13 @@ def manufacturers():
 
 @app.get("/api/addresses")
 def addresses(
+    request: Request,
     city: Optional[str] = None,
     manufacturer: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 100,
 ):
+    get_current_user(request)
     limit = max(1, min(limit, 1000))
     with get_db() as conn:
         sql = "SELECT id, city, address_name, manufacturer FROM addresses WHERE active = 1"
@@ -1406,6 +1563,15 @@ def create_task(data: TaskIn, request: Request):
                 "Создание задания",
             ),
         )
+        write_audit(
+            conn,
+            user,
+            "task.create",
+            "task",
+            task_id,
+            after={"address_id": data.address_id, "description": data.description.strip()},
+            request=request,
+        )
     return {"ok": True, "task_id": task_id}
 
 
@@ -1818,6 +1984,15 @@ def complete_task(task_id: int, request: Request):
             user["sub"],
             "Сервис отправил задание на проверку",
         )
+        write_audit(
+            conn,
+            user,
+            "task.complete",
+            "task",
+            task_id,
+            after={"workflow_status": "pending_review"},
+            request=request,
+        )
 
     return {
         "ok": True,
@@ -1854,6 +2029,15 @@ def approve_task(task_id: int, request: Request):
             user["sub"],
             "Задание принято",
         )
+        write_audit(
+            conn,
+            user,
+            "task.approve",
+            "task",
+            task_id,
+            after={"workflow_status": "completed"},
+            request=request,
+        )
 
     return {
         "ok": True,
@@ -1887,6 +2071,15 @@ def rework_task(task_id: int, request: Request):
             "rework",
             user["sub"],
             "Задание отправлено на доработку",
+        )
+        write_audit(
+            conn,
+            user,
+            "task.rework",
+            "task",
+            task_id,
+            after={"workflow_status": "rework"},
+            request=request,
         )
 
     return {
@@ -1924,6 +2117,15 @@ def close_task(task_id: int, request: Request):
             "closed",
             user["sub"],
             "Задание закрыто",
+        )
+        write_audit(
+            conn,
+            user,
+            "task.close",
+            "task",
+            task_id,
+            after={"workflow_status": "closed"},
+            request=request,
         )
 
         # Сохраняем старую модель status для совместимости.
@@ -2009,7 +2211,7 @@ def task_status_history(task_id: int, request: Request):
 def delete_task(task_id: int, request: Request):
     # Оставляем старый endpoint для совместимости,
     # но физического удаления больше нет.
-    require_any(request, ["admin"])
+    user = require_any(request, ["admin"])
 
     with get_db() as conn:
         row = conn.execute(
@@ -2027,6 +2229,7 @@ def delete_task(task_id: int, request: Request):
             "UPDATE tasks SET hidden = 1 WHERE id = ?",
             (task_id,),
         )
+        write_audit(conn, user, "task.hide", "task", task_id, request=request)
 
     return {"ok": True, "hidden": True}
 
@@ -2034,7 +2237,7 @@ def delete_task(task_id: int, request: Request):
 @app.post("/api/feed/{item_type}/{item_id}/hide")
 def hide_feed_item(item_type: str, item_id: int, request: Request):
     """Скрыть запись из отображения всех ролей без физического удаления."""
-    require_any(request, ["admin"])
+    user = require_any(request, ["admin"])
 
     table_by_type = {
         "task": "tasks",
@@ -2065,6 +2268,14 @@ def hide_feed_item(item_type: str, item_id: int, request: Request):
         conn.execute(
             f"UPDATE {table} SET hidden = 1 WHERE id = ?",
             (item_id,),
+        )
+        write_audit(
+            conn,
+            user,
+            "feed.hide",
+            item_type,
+            item_id,
+            request=request,
         )
 
     return {
@@ -2205,7 +2416,7 @@ def list_users_api(request: Request):
 
 @app.post("/api/users")
 def create_user_api(data: UserIn, request: Request):
-    require_any(request, ["admin"])
+    user = require_any(request, ["admin"])
     if data.role not in (
         "admin",
         "service",
@@ -2222,18 +2433,55 @@ def create_user_api(data: UserIn, request: Request):
         if exists:
             raise HTTPException(status_code=400, detail="Логин уже занят")
         conn.execute(
-            "INSERT INTO users (login, password_hash, role) VALUES (?, ?, ?)",
-            (data.login, hash_password(data.password), data.role)
+            "INSERT INTO users (login, password_hash, role, legal_entity_id) VALUES (?, ?, ?, ?)",
+            (
+                data.login,
+                hash_password(data.password),
+                data.role,
+                user.get("legal_entity_id"),
+            )
+        )
+        write_audit(
+            conn,
+            user,
+            "user.create",
+            "user",
+            data.login,
+            after={"login": data.login, "role": data.role},
+            request=request,
         )
     return {"ok": True}
 
 @app.put("/api/users/{user_id}/password")
 def change_password_api(user_id: int, data: PasswordIn, request: Request):
-    require_any(request, ["admin"])
+    user = require_any(request, ["admin"])
     with get_db() as conn:
         conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            """
+            UPDATE users
+            SET password_hash = ?,
+                token_version = COALESCE(token_version, 1) + 1
+            WHERE id = ?
+            """,
             (hash_password(data.new_password), user_id)
+        )
+        # Смена пароля немедленно закрывает все активные сессии пользователя.
+        conn.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+              AND revoked_at IS NULL
+            """,
+            (user_id,),
+        )
+        write_audit(
+            conn,
+            user,
+            "user.password.change",
+            "user",
+            user_id,
+            request=request,
         )
     return {"ok": True}
 # =========================================================================

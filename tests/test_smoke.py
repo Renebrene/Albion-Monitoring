@@ -1,3 +1,4 @@
+import atexit
 import os
 import sys
 import tempfile
@@ -9,6 +10,9 @@ from pathlib import Path
 # app.py captures DB paths and initializes the schema during import. Isolate it
 # before the first import so tests cannot reach project data/uploads.
 TEST_ROOT = Path(tempfile.mkdtemp(prefix="albion-tests-"))
+# Временный каталог общий для всех тест-классов модуля, поэтому удаляем его
+# только в конце процесса: иначе классы, идущие следом, останутся без БД.
+atexit.register(lambda: shutil.rmtree(TEST_ROOT, ignore_errors=True))
 os.environ["DB_PATH"] = str(TEST_ROOT / "test.db")
 os.environ["UPLOADS_DIR"] = str(TEST_ROOT / "uploads")
 os.environ.pop("PRIVATE_MEDIA_DIR", None)
@@ -19,11 +23,32 @@ sys.path.insert(0, str(APP_DIR))
 
 try:
     from fastapi.testclient import TestClient
+    from starlette.requests import Request as StarletteRequest
+
     from app import app
-    from auth import create_token
-    from database import get_db
+    from auth import create_token, get_current_user, hash_password
+    from database import get_db, get_tenant_context
 except ImportError as exc:  # pragma: no cover - useful in minimal envs
     raise RuntimeError("Install app requirements and test extra httpx") from exc
+
+
+def make_session_token(user_id, login, role):
+    """Создаёт серверную сессию и привязанный к ней JWT."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT token_version FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        cursor = conn.execute(
+            "INSERT INTO auth_sessions (user_id, login, role) VALUES (?, ?, ?)",
+            (user_id, login, role),
+        )
+    return create_token(
+        user_id,
+        login,
+        role,
+        session_id=cursor.lastrowid,
+        token_version=row["token_version"] if row else 1,
+    )
 
 
 class ApplicationSmokeTests(unittest.TestCase):
@@ -70,15 +95,15 @@ class ApplicationSmokeTests(unittest.TestCase):
             (TEST_ROOT / "uploads" / "media-link.jpg").symlink_to(TEST_ROOT / "outside.jpg")
         except OSError:
             pass
-        cls.token = create_token(1, "qa", "admin")
+        cls.token = make_session_token(1, "qa", "admin")
         cls.headers = {"Authorization": f"Bearer {cls.token}"}
-        cls.service_headers = {"Authorization": f"Bearer {create_token(2, 'service-qa', 'service')}"}
-        cls.director_headers = {"Authorization": f"Bearer {create_token(3, 'director-qa', 'director')}"}
-        cls.staff_headers = {"Authorization": f"Bearer {create_token(4, 'staff-qa', 'staff')}"}
+        cls.service_headers = {"Authorization": f"Bearer {make_session_token(2, 'service-qa', 'service')}"}
+        cls.director_headers = {"Authorization": f"Bearer {make_session_token(3, 'director-qa', 'director')}"}
+        cls.staff_headers = {"Authorization": f"Bearer {make_session_token(4, 'staff-qa', 'staff')}"}
         cls.administrator_headers = {
-            "Authorization": f"Bearer {create_token(5, 'administrator-qa', 'administrator')}"
+            "Authorization": f"Bearer {make_session_token(5, 'administrator-qa', 'administrator')}"
         }
-        cls.curator_headers = {"Authorization": f"Bearer {create_token(6, 'curator-qa', 'curator')}"}
+        cls.curator_headers = {"Authorization": f"Bearer {make_session_token(6, 'curator-qa', 'curator')}"}
 
     def test_upload_quota_defaults_and_admin_authorization(self):
         defaults = {
@@ -103,7 +128,7 @@ class ApplicationSmokeTests(unittest.TestCase):
             },
         )
         self.assertEqual(unauthenticated.status_code, 401)
-        service_token = create_token(2, "service-qa", "service")
+        service_token = make_session_token(2, "service-qa", "service")
         forbidden = self.client.put(
             "/api/settings/quotas",
             json={
@@ -194,6 +219,19 @@ class ApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(task, ("Legacy completed", "done", "completed", "admin"))
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"comments", "director_comments", "task_status_history", "schema_migrations"}.issubset(tables))
+        self.assertTrue({"legal_entities", "audit_log"}.issubset(tables))
+        # v3: у мигрированного пользователя появляются активность, версия прав
+        # и юрлицо по умолчанию — прежние поля не меняются.
+        user = conn.execute(
+            "SELECT login, role, active, token_version, legal_entity_id FROM users WHERE id = 1"
+        ).fetchone()
+        self.assertEqual(user, ("legacy-admin", "admin", 1, 1, 1))
+        self.assertEqual(
+            conn.execute("SELECT name FROM legal_entities WHERE id = 1").fetchone()[0],
+            "Головная организация",
+        )
+        versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
+        self.assertEqual(versions, [1, 2, 3])
         conn.close()
 
     def test_task_workflow_transitions_and_history(self):
@@ -244,7 +282,11 @@ class ApplicationSmokeTests(unittest.TestCase):
             applied = conn.execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall()
             self.assertEqual(
                 [(row["version"], row["name"]) for row in applied],
-                [(1, "workflow_and_comments"), (2, "soft_hide_and_original_filenames")],
+                [
+                    (1, "workflow_and_comments"),
+                    (2, "soft_hide_and_original_filenames"),
+                    (3, "sessions_audit_active"),
+                ],
             )
             existing_task = conn.execute("SELECT workflow_status, created_by_role, is_important FROM tasks WHERE id=1").fetchone()
             self.assertEqual(existing_task["workflow_status"], "open")
@@ -253,14 +295,26 @@ class ApplicationSmokeTests(unittest.TestCase):
         from database import init_schema
         init_schema()
         with get_db() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 3)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 4)
 
     def test_address_limit_is_bounded(self):
-        response = self.client.get("/api/addresses", params={"limit": 10000000})
+        response = self.client.get(
+            "/api/addresses", params={"limit": 10000000}, headers=self.headers
+        )
         self.assertEqual(response.status_code, 200)
         self.assertLessEqual(len(response.json()), 1000)
-        self.assertEqual(self.client.get("/api/addresses", params={"limit": 0}).status_code, 200)
+        self.assertEqual(
+            self.client.get(
+                "/api/addresses", params={"limit": 0}, headers=self.headers
+            ).status_code,
+            200,
+        )
+
+    def test_directories_require_auth(self):
+        # Без токена неизвестно юрлицо, поэтому справочники закрыты.
+        for path in ("/api/addresses", "/api/cities", "/api/manufacturers"):
+            self.assertEqual(self.client.get(path).status_code, 401, path)
 
     def test_health_is_public_and_non_sensitive(self):
         response = self.client.get("/healthz")
@@ -1035,10 +1089,235 @@ class ApplicationSmokeTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.client.close()
+
+
+class AccessStageTests(unittest.TestCase):
+    """Отзыв сессий, роль/активность из БД, аудит и контекст юрлица."""
+
+    PASSWORD = "Start-Pass-Access-1"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        password_hash = hash_password(cls.PASSWORD)
+        with get_db() as conn:
+            conn.execute("DELETE FROM auth_sessions WHERE user_id IN (10, 11, 12, 13)")
+            conn.execute("DELETE FROM users WHERE id IN (10, 11, 12, 13)")
+            conn.execute(
+                """
+                INSERT INTO users (id, login, password_hash, role, active, token_version, legal_entity_id)
+                VALUES
+                    (10, 'access-admin', ?, 'admin', 1, 1, 1),
+                    (11, 'session-qa', ?, 'staff', 1, 1, 1),
+                    (12, 'blocked-qa', ?, 'staff', 0, 1, 1),
+                    (13, 'entity2-qa', ?, 'administrator', 1, 1, 2)
+                """,
+                (password_hash, password_hash, password_hash, password_hash),
+            )
+        cls.admin_headers = {
+            "Authorization": f"Bearer {make_session_token(10, 'access-admin', 'admin')}"
+        }
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close()
+
+    @staticmethod
+    def _request(token):
+        """Минимальный ASGI-scope для прямого вызова get_current_user."""
+        return StarletteRequest(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/me",
+                "headers": [(b"authorization", f"Bearer {token}".encode())],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "scheme": "http",
+                "query_string": b"",
+            }
+        )
+
+    def _login(self, login, password=None):
+        return self.client.post(
+            "/api/login", json={"login": login, "password": password or self.PASSWORD}
+        )
+
+    def _audit_rows(self, action, actor_user_id=None):
+        with get_db() as conn:
+            if actor_user_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM audit_log WHERE action = ?", (action,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM audit_log WHERE action = ? AND actor_user_id = ?",
+                    (action, actor_user_id),
+                ).fetchall()
+        return rows
+
+    def test_token_without_session_is_rejected(self):
+        token = create_token(11, "session-qa", "staff")
+        response = self.client.get(
+            "/api/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_token_with_unknown_session_is_rejected(self):
+        token = create_token(11, "session-qa", "staff", session_id=999999)
+        response = self.client.get(
+            "/api/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_login_logout_flow_is_audited(self):
+        login = self._login("session-qa")
+        self.assertEqual(login.status_code, 200)
+        token = login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        self.assertEqual(self.client.get("/api/me", headers=headers).status_code, 200)
+        self.assertEqual(self.client.post("/api/logout", headers=headers).status_code, 200)
+        self.assertEqual(self.client.get("/api/me", headers=headers).status_code, 401)
+
+        self.assertTrue(self._audit_rows("auth.login", actor_user_id=11))
+        self.assertTrue(self._audit_rows("auth.logout", actor_user_id=11))
+
+    def test_logout_leaves_other_sessions_alive(self):
+        first = make_session_token(11, "session-qa", "staff")
+        second = make_session_token(11, "session-qa", "staff")
+        self.assertEqual(
+            self.client.post(
+                "/api/logout", headers={"Authorization": f"Bearer {first}"}
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/me", headers={"Authorization": f"Bearer {first}"}
+            ).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/me", headers={"Authorization": f"Bearer {second}"}
+            ).status_code,
+            200,
+        )
+
+    def test_expired_session_is_rejected(self):
+        with get_db() as conn:
+            session_id = conn.execute(
+                "INSERT INTO auth_sessions (user_id, login, role, expires_at) "
+                "VALUES (11, 'session-qa', 'staff', '2000-01-01 00:00:00')"
+            ).lastrowid
+        token = create_token(11, "session-qa", "staff", session_id=session_id)
+        response = self.client.get(
+            "/api/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_token_hash_mismatch_is_rejected(self):
+        session_token = make_session_token(11, "session-qa", "staff")
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE auth_sessions SET token_hash = ? WHERE user_id = 11 "
+                "AND token_hash IS NULL",
+                (create_token(11, "session-qa", "staff", session_id=12345),),
+            )
+        response = self.client.get(
+            "/api/me", headers={"Authorization": f"Bearer {session_token}"}
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_password_change_revokes_all_sessions(self):
+        login = self._login("session-qa")
+        token = login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        self.assertEqual(self.client.get("/api/me", headers=headers).status_code, 200)
+
+        changed = self.client.put(
+            "/api/users/11/password",
+            json={"new_password": "Rotated-Pass-2"},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(changed.status_code, 200)
+
+        self.assertEqual(self.client.get("/api/me", headers=headers).status_code, 401)
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT token_version FROM users WHERE id = 11"
+            ).fetchone()
+            revoked = conn.execute(
+                "SELECT COUNT(*) FROM auth_sessions WHERE user_id = 11 AND revoked_at IS NULL"
+            ).fetchone()[0]
+        self.assertGreaterEqual(row["token_version"], 2)
+        self.assertEqual(revoked, 0)
+        self.assertTrue(self._audit_rows("user.password.change", actor_user_id=10))
+
+        # Пароль заменяем обратно, чтобы тест был повторяемым.
+        self.assertEqual(
+            self.client.put(
+                "/api/users/11/password",
+                json={"new_password": self.PASSWORD},
+                headers=self.admin_headers,
+            ).status_code,
+            200,
+        )
+
+    def test_inactive_user_is_blocked_on_login_and_by_token(self):
+        blocked_login = self._login("blocked-qa")
+        self.assertEqual(blocked_login.status_code, 403)
+        self.assertTrue(self._audit_rows("auth.login.blocked", actor_user_id=12))
+
+        token = make_session_token(12, "blocked-qa", "staff")
+        response = self.client.get(
+            "/api/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("заблокирован", response.json()["detail"].lower())
+
+    def test_failed_login_is_audited(self):
+        response = self._login("session-qa", password="definitely-wrong")
+        self.assertEqual(response.status_code, 401)
+        rows = self._audit_rows("auth.login.failed")
+        self.assertTrue(any(row["object_id"] == "session-qa" for row in rows))
+
+    def test_role_and_entity_come_from_database(self):
+        with get_db() as conn:
+            session_id = conn.execute(
+                "INSERT INTO auth_sessions (user_id, login, role) "
+                "VALUES (13, 'entity2-qa', 'administrator')"
+            ).lastrowid
+        # Роль в токене намеренно устаревшая: приложение обязано читать её из БД.
+        token = create_token(
+            13,
+            "entity2-qa",
+            "staff",
+            session_id=session_id,
+            legal_entity_id=2,
+        )
+        user = get_current_user(self._request(token))
+
+        self.assertEqual(user["role"], "administrator")
+        self.assertEqual(user["legal_entity_id"], 2)
+        self.assertEqual(
+            get_tenant_context(), {"legal_entity_id": 2, "is_group_admin": True}
+        )
+
+        # Понижение роли в БД действует немедленно, без перевыпуска токена.
+        with get_db() as conn:
+            conn.execute("UPDATE users SET role = 'staff' WHERE id = 13")
         try:
-            cls.client.close()
+            demoted = get_current_user(self._request(token))
+            self.assertEqual(demoted["role"], "staff")
+            self.assertEqual(
+                get_tenant_context(), {"legal_entity_id": 2, "is_group_admin": False}
+            )
         finally:
-            shutil.rmtree(TEST_ROOT, ignore_errors=True)
+            with get_db() as conn:
+                conn.execute("UPDATE users SET role = 'administrator' WHERE id = 13")
 
 
 if __name__ == "__main__":

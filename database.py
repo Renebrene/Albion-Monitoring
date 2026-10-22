@@ -1,3 +1,4 @@
+import contextvars
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -34,13 +35,45 @@ _PG_TABLES_WITHOUT_ID = {"settings", "schema_migrations"}
 
 _pg_engine = None
 
+# Tenant context of the current request. Set by auth.get_current_user() before
+# the handler opens a connection; read on every PostgreSQL checkout.
+_tenant_entity_id = contextvars.ContextVar("tenant_entity_id", default=1)
+_tenant_is_group_admin = contextvars.ContextVar("tenant_is_group_admin", default=False)
+
+
+def set_tenant_context(legal_entity_id, is_group_admin: bool = False) -> None:
+    _tenant_entity_id.set(int(legal_entity_id or 1))
+    _tenant_is_group_admin.set(bool(is_group_admin))
+
+
+def apply_tenant_settings(conn) -> None:
+    """Применяет текущий контекст юрлица к уже открытому соединению.
+
+    Нужно там, где юрлицо становится известно внутри запроса (например, вход
+    в систему), а соединение выдано раньше. Для SQLite — no-op.
+    """
+    if DB_BACKEND != "postgres":
+        return
+    entity_id = int(_tenant_entity_id.get() or 1)
+    is_group_admin = "on" if _tenant_is_group_admin.get() else "off"
+    conn.execute(f"SET app.legal_entity_ids = '{entity_id}'")
+    conn.execute(f"SET app.is_group_admin = '{is_group_admin}'")
+
+
+def get_tenant_context() -> dict:
+    """Текущий контекст юрлица (для новых записей и диагностики)."""
+    return {
+        "legal_entity_id": _tenant_entity_id.get(),
+        "is_group_admin": _tenant_is_group_admin.get(),
+    }
+
 
 def _get_pg_engine():
     global _pg_engine
     if _pg_engine is None:
         if not DATABASE_URL:
             raise RuntimeError("DB_BACKEND=postgres requires DATABASE_URL")
-        from sqlalchemy import create_engine, event
+        from sqlalchemy import create_engine
 
         _pg_engine = create_engine(
             DATABASE_URL,
@@ -49,21 +82,11 @@ def _get_pg_engine():
             max_overflow=10,
             pool_recycle=1800,
             connect_args={
-                "options": "-csearch_path=monitoring,core,public",
+                # Время приложения — naive-UTC (как CURRENT_TIMESTAMP в SQLite),
+                # поэтому сессия PostgreSQL тоже переводится в UTC.
+                "options": "-csearch_path=monitoring,core,public -c TimeZone=UTC",
             },
         )
-
-        @event.listens_for(_pg_engine, "connect")
-        def _apply_app_role(dbapi_connection, _record):
-            # Enforce RLS: the owner bypasses policies, albion_app does not.
-            # Tenant context is single-entity until per-user context lands.
-            cursor = dbapi_connection.cursor()
-            try:
-                cursor.execute("SET ROLE albion_app")
-                cursor.execute("SET app.legal_entity_ids = '1'")
-                cursor.execute("SET app.is_group_admin = 'off'")
-            finally:
-                cursor.close()
 
     return _pg_engine
 
@@ -169,6 +192,16 @@ class _PgConnection:
         return _PgResult(result, lastrowid)
 
     def commit(self):
+        # В PostgreSQL COMMIT в прерванной транзакции молча превращается в
+        # ROLLBACK. Такую потерю изменений нельзя оставлять незамеченной.
+        dbapi = getattr(self._connection, "connection", None)
+        dbapi = getattr(dbapi, "dbapi_connection", dbapi)
+        info = getattr(dbapi, "info", None)
+        status = getattr(info, "transaction_status", None)
+        if status is not None and "INERROR" in str(status):
+            raise RuntimeError(
+                "Транзакция прервана ошибкой, изменения не сохранены"
+            )
         self._connection.commit()
 
     def rollback(self):
@@ -197,6 +230,17 @@ def _sqlite_db():
 def _postgres_db():
     engine = _get_pg_engine()
     connection = engine.connect()
+
+    # Enforce RLS: the owner bypasses policies, albion_app does not.
+    entity_id = int(_tenant_entity_id.get() or 1)
+    is_group_admin = "on" if _tenant_is_group_admin.get() else "off"
+    if os.environ.get("ALBION_DEBUG_TENANT"):
+        print(f"TENANT checkout entity={entity_id} group_admin={is_group_admin}", flush=True)
+    connection.exec_driver_sql("RESET ROLE")
+    connection.exec_driver_sql("SET ROLE albion_app")
+    connection.exec_driver_sql(f"SET app.legal_entity_ids = '{entity_id}'")
+    connection.exec_driver_sql(f"SET app.is_group_admin = '{is_group_admin}'")
+
     wrapper = _PgConnection(connection)
     try:
         yield wrapper
@@ -340,6 +384,59 @@ def _migration_2_soft_hide_and_original_filenames(conn):
         conn.execute(index_sql)
 
 
+def _migration_3_sessions_audit_active(conn):
+    """Session revocation, user activity, token version and audit log."""
+    _add_column_if_missing(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS legal_entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            short_name TEXT,
+            inn TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    if not conn.execute("SELECT 1 FROM legal_entities WHERE id = 1").fetchone():
+        conn.execute(
+            "INSERT INTO legal_entities(id, name, short_name) VALUES (1, ?, ?)",
+            ("Головная организация", "Головная"),
+        )
+    # SQLite-совместимая замена REFERENCES: колонка без FK, значение по умолчанию — 1.
+    _add_column_if_missing(conn, "users", "legal_entity_id", "INTEGER NOT NULL DEFAULT 1")
+
+    for column, definition in (
+        ("revoked_at", "DATETIME"),
+        ("expires_at", "DATETIME"),
+        ("token_hash", "TEXT"),
+    ):
+        _add_column_if_missing(conn, "auth_sessions", column, definition)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            actor_user_id INTEGER,
+            legal_entity_id INTEGER,
+            action TEXT NOT NULL,
+            object_type TEXT,
+            object_id TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            ip TEXT,
+            request_id TEXT
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_log(occurred_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_user_id, occurred_at)"
+    )
+
+
 def _apply_schema_migrations(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -351,6 +448,7 @@ def _apply_schema_migrations(conn):
     migrations = (
         (1, "workflow_and_comments", _migration_1_workflow_and_comments),
         (2, "soft_hide_and_original_filenames", _migration_2_soft_hide_and_original_filenames),
+        (3, "sessions_audit_active", _migration_3_sessions_audit_active),
     )
     for version, name, migration in migrations:
         applied = conn.execute(
@@ -380,7 +478,19 @@ def _init_sqlite_schema():
                 login TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin','service','director','crew','head','staff','administrator','curator')),
+                active INTEGER NOT NULL DEFAULT 1,
+                token_version INTEGER NOT NULL DEFAULT 1,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS legal_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                short_name TEXT,
+                inn TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS auth_sessions (
@@ -390,6 +500,9 @@ def _init_sqlite_schema():
                 role TEXT NOT NULL,
                 login_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 logout_at DATETIME,
+                revoked_at DATETIME,
+                expires_at DATETIME,
+                token_hash TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
 

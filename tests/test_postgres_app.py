@@ -22,6 +22,30 @@ from alembic.config import Config  # noqa: E402
 import migrate_sqlite_to_pg as migrator  # noqa: E402
 
 
+def bcrypt_hash(password: str) -> str:
+    """Хэш пароля в отдельном процессе.
+
+    Импортировать `auth`/`database` внутри тест-процесса нельзя: модуль базы
+    фиксирует DB_PATH при импорте и сломает изоляцию соседних тест-модулей.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from auth import hash_password; print(hash_password(sys.argv[2]))",
+            str(APP_DIR),
+            password,
+        ],
+        env={**os.environ, "JWT_SECRET": "unit-test-only-random-secret-0123456789abcdef"},
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return result.stdout.strip()
+
+
 FIXTURE_SCRIPT = """
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -73,7 +97,29 @@ for login, role in (("service", "service"), ("crew", "crew"), ("head", "head"), 
     tokens[role] = {"Authorization": "Bearer " + r.json()["token"]}
 
 assert client.get("/api/auth-sessions", headers=admin).status_code == 200
-assert len(client.get("/api/users", headers=admin).json()) == 5
+assert len(client.get("/api/users", headers=admin).json()) == 6
+
+# Юрлицо берётся из сессии и уходит в RLS: вторая организация видит только своё
+# и общие адреса, а личные адреса первой организации ей недоступны.
+r = client.post("/api/login", json={"login": "entity2", "password": "TestPass1!"})
+assert r.status_code == 200, r.text
+entity2 = {"Authorization": "Bearer " + r.json()["token"]}
+assert client.get("/api/me", headers=entity2).json()["role"] == "staff"
+
+entity2_addresses = {row["id"] for row in client.get("/api/addresses", headers=entity2).json()}
+assert 99 in entity2_addresses, entity2_addresses      # свой адрес
+assert 100 in entity2_addresses, entity2_addresses    # общий адрес
+assert 101 not in entity2_addresses, entity2_addresses  # личный адрес первой
+
+entity1_addresses = {
+    row["id"] for row in client.get("/api/addresses", headers=tokens["service"]).json()
+}
+assert 100 in entity1_addresses and 101 in entity1_addresses, entity1_addresses
+assert 99 not in entity1_addresses, entity1_addresses
+
+# Администратор группы видит все юрлица.
+admin_addresses = {row["id"] for row in client.get("/api/addresses", headers=admin).json()}
+assert 99 in admin_addresses and 101 in admin_addresses, admin_addresses
 
 feed = client.get("/api/feed?limit=100&offset=0", headers=admin).json()
 assert feed["limit"] == 100 and "items" in feed, feed
@@ -154,7 +200,26 @@ key1 = (page1["items"][0]["type"], page1["items"][0]["id"])
 key2 = (page2["items"][0]["type"], page2["items"][0]["id"])
 assert key1 != key2, (key1, key2)
 
+# Отзыв сессий: выход закрывает именно свою сессию, смена пароля — все сессии.
+assert client.post("/api/logout", headers=tokens["crew"]).status_code == 200
+assert client.get("/api/me", headers=tokens["crew"]).status_code == 401
+assert client.get("/api/me", headers=tokens["service"]).status_code == 200
+
+assert client.put(
+    "/api/users/2/password",
+    json={"new_password": "Rotated-Pass-9"},
+    headers=admin,
+).status_code == 200
+assert client.get("/api/me", headers=tokens["service"]).status_code == 401
+assert client.post(
+    "/api/login", json={"login": "service", "password": "TestPass1!"}
+).status_code == 401
+assert client.post(
+    "/api/login", json={"login": "service", "password": "Rotated-Pass-9"}
+).status_code == 200
+
 assert client.post("/api/logout", headers=admin).status_code == 200
+assert client.get("/api/me", headers=admin).status_code == 401
 print(json.dumps({"ok": True, "task_id": task_id, "report_id": report_id, "crew_id": crew_id}))
 """
 
@@ -196,6 +261,7 @@ class PostgresAppTests(unittest.TestCase):
 
         # Data of another legal entity must stay invisible to the app (RLS).
         raw_url = migrator.psycopg_url(cls.database_url)
+        cls.raw_url = raw_url
         with psycopg.connect(raw_url) as conn:
             conn.execute("INSERT INTO core.legal_entities (id, name) VALUES (2, 'ООО Второе')")
             conn.execute(
@@ -205,6 +271,37 @@ class PostgresAppTests(unittest.TestCase):
                 VALUES (99, 2, 0, 'Батайск', 'Чужая для второй')
                 """
             )
+            # Общий адрес первой организации доступен обеим организациям.
+            conn.execute(
+                """
+                INSERT INTO monitoring.addresses
+                    (id, legal_entity_id, shared, city, address_name)
+                VALUES (100, 1, 1, 'Шахты', 'Общая для всех')
+                """
+            )
+            # Личный адрес первой организации: второй он не виден.
+            conn.execute(
+                """
+                INSERT INTO monitoring.addresses
+                    (id, legal_entity_id, shared, city, address_name)
+                VALUES (101, 1, 0, 'Азов', 'Только для первой')
+                """
+            )
+            # Пользователь второй организации: роль без групповых прав.
+            conn.execute(
+                """
+                INSERT INTO core.users (id, login, password_hash, role, legal_entity_id)
+                VALUES (6, 'entity2', %s, 'staff', 2)
+                """,
+                (bcrypt_hash("TestPass1!"),),
+            )
+            # Явные id сдвигают последовательности: иначе следующая вставка
+            # из приложения упрётся в конфликт первичного ключа.
+            for table in ("core.users", "monitoring.addresses"):
+                conn.execute(
+                    f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                    f"(SELECT MAX(id) FROM {table}))"
+                )
             conn.commit()
 
     @classmethod
@@ -234,6 +331,61 @@ class PostgresAppTests(unittest.TestCase):
         self.assertGreaterEqual(payload["task_id"], 1)
         self.assertGreaterEqual(payload["report_id"], 1)
         self.assertGreaterEqual(payload["crew_id"], 1)
+
+        # Аудит: приложение реально писало действия в core.audit_log,
+        # а не теряло их из-за ошибок или отката транзакции.
+        with psycopg.connect(self.raw_url) as conn:
+            rows = conn.execute(
+                "SELECT action, COUNT(*) FROM core.audit_log GROUP BY action"
+            ).fetchall()
+            entities = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT legal_entity_id FROM core.audit_log"
+                ).fetchall()
+            }
+
+        counts = dict(rows)
+        for action in (
+            "auth.login",
+            "auth.logout",
+            "auth.login.failed",
+            "user.password.change",
+            "task.create",
+            "task.complete",
+        ):
+            self.assertIn(action, counts, counts)
+            self.assertGreaterEqual(counts[action], 1, counts)
+
+        # Аудит ведётся с юрлицом автора: обе организации попали в журнал.
+        # У неудачных входов юрлицо неизвестно, поэтому там NULL.
+        self.assertTrue({1, 2}.issubset(entities), entities)
+
+    def test_audit_log_is_isolated_per_entity(self):
+        with psycopg.connect(self.raw_url) as conn:
+            conn.execute(
+                "INSERT INTO core.audit_log (legal_entity_id, action) VALUES (1, 'probe.first')"
+            )
+            conn.execute(
+                "INSERT INTO core.audit_log (legal_entity_id, action) VALUES (2, 'probe.second')"
+            )
+            conn.commit()
+
+        def visible(entity, group_admin):
+            with psycopg.connect(self.raw_url) as conn:
+                conn.execute("SET ROLE albion_app")
+                conn.execute(f"SET app.legal_entity_ids = '{entity}'")
+                conn.execute(f"SET app.is_group_admin = '{group_admin}'")
+                return {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT DISTINCT legal_entity_id FROM core.audit_log"
+                    ).fetchall()
+                }
+
+        self.assertNotIn(2, visible(1, "off"))
+        self.assertNotIn(1, visible(2, "off"))
+        self.assertEqual(visible(1, "on"), {1, 2})
 
 
 if __name__ == "__main__":

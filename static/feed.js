@@ -71,7 +71,10 @@ function updateCommentMediaSelection(input, statusEl, listEl) {
   }
 }
 
-const API = (path, opts={}) => fetch(path, opts).then(async r => {
+const API = (path, opts={}) => fetch(path, {
+  ...opts,
+  headers: { "Authorization": "Bearer " + (localStorage.getItem("token") || ""), ...(opts.headers || {}) },
+}).then(async r => {
   if(r.status === 401){ localStorage.clear(); location.href = "/"; }
   const data = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data.detail || "Ошибка");
