@@ -1906,13 +1906,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const me = await API("/api/me").catch(() => null);
 
-  if(!me || !["director", "admin"].includes(getBaseRole(me.role))) {
+  if(!me || !["director", "admin"].includes(me.workplace || getBaseRole(me.role))) {
     location.href = "/";
     return;
   }
 
   myLogin = me.login || "";
-  myRole = getBaseRole(me.role);
+  myRole = me.workplace || getBaseRole(me.role);
 
   const userInfo = document.getElementById("userInfo");
 

@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import mimetypes
+import re
 from contextlib import asynccontextmanager, contextmanager
 import os
 import tempfile
@@ -31,9 +32,14 @@ from database import (
 )
 from auth import (
     hash_password, verify_password, create_token, token_fingerprint,
-    get_current_user, require_role, require_any, require_entity_scope,
-    available_entities, get_base_role,
+    get_current_user, require_role, require_any, require_capability,
+    require_capabilities, require_entity_scope, ensure_capability, user_has,
+    available_entities, get_base_role, load_role, role_code_for_entity,
     ROLE_LABELS, ROLE_HOME, TOKEN_HOURS,
+)
+from permissions import (
+    WORKPLACES, SCOPES, capability_catalog, unknown_capabilities,
+    normalize_scope, normalize_workplace, home_for,
 )
 
 init_schema()
@@ -52,6 +58,13 @@ def parent_entity_id(conn, table: str, row_id):
     if not row:
         return None
     return int(row["legal_entity_id"] or 1)
+
+
+def own_scope_clause(user: dict, column: str):
+    """Фильтр «только свои записи» для роли с областью данных own."""
+    if user.get("data_scope") != "own":
+        return "", []
+    return f" AND {column} = ?", [user["sub"]]
 
 
 def scope_entity_for_reply(conn, table: str, row_id, user: dict) -> int:
@@ -580,13 +593,7 @@ def tasks_page(request: Request):
 # ---------- Авторизация ----------
 @app.get("/api/auth-sessions")
 def auth_sessions(request: Request):
-    user = get_current_user(request)
-
-    if get_base_role(user.get("role", "")) != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Доступ только для администратора",
-        )
+    user = require_capability(request, "users.manage")
 
     with get_db() as conn:
         rows = conn.execute(
@@ -739,12 +746,22 @@ def login(data: LoginIn, request: Request):
         )
         conn.commit()
 
+    # Рабочее место и возможности роли: у своих ролей своей страницы нет,
+    # они используют интерфейс выбранного рабочего места.
+    with get_db() as conn:
+        role = load_role(conn, row["role"])
+
+    if not role or not role["active"]:
+        raise HTTPException(status_code=403, detail="Роль недоступна: обратитесь к администратору")
+
     return {
         "token": token,
-        "role": row["role"],
-        "role_label": ROLE_LABELS[row["role"]],
+        "role": role["code"],
+        "role_label": role["name"],
         "login": row["login"],
-        "home": ROLE_HOME[row["role"]],
+        "workplace": role["workplace"],
+        "capabilities": sorted(role["capabilities"]),
+        "home": home_for(role["workplace"], role["code"], role["is_system"]),
     }
 
 
@@ -778,7 +795,10 @@ def me(request: Request):
         "sub": user["sub"],
         "login": user["login"],
         "role": user["role"],
-        "role_label": ROLE_LABELS.get(user["role"], user["role"]),
+        "role_label": user.get("role_label") or ROLE_LABELS.get(user["role"], user["role"]),
+        "workplace": user.get("workplace"),
+        "data_scope": user.get("data_scope"),
+        "capabilities": user.get("capabilities", []),
         "legal_entity_id": user["legal_entity_id"],
         "all_entities": user["all_entities"],
         "can_view_all": can_view_all_entities(user),
@@ -885,7 +905,7 @@ def get_settings(request: Request):
 
 @app.put("/api/settings/quotas")
 def update_upload_quotas(data: UploadQuotasIn, request: Request):
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "settings.manage")
     photo_bytes = parse_quota_bytes(data.photo_max_upload_bytes, PHOTO_UPLOAD_SETTING)
     video_bytes = parse_quota_bytes(data.video_max_upload_bytes, VIDEO_UPLOAD_SETTING)
     storage_bytes = parse_quota_bytes(data.uploads_quota_bytes, STORAGE_QUOTA_SETTING)
@@ -934,7 +954,7 @@ def update_upload_quotas(data: UploadQuotasIn, request: Request):
 @app.put("/api/settings")
 def update_setting(data: SettingIn, request: Request):
     """Изменить настройки. Изменения квот доступны только администратору."""
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "settings.manage")
     if data.key in {"photos_enabled", "videos_enabled"}:
         if data.value not in ("0", "1"):
             raise HTTPException(status_code=400, detail="Значение должно быть 0 или 1")
@@ -1080,7 +1100,7 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
 # ---------- Записи мониторинга ----------
 @app.post("/api/reports")
 def create_report(data: ReportIn, request: Request):
-    user = require_any(request, ["admin", "service"])
+    user = require_capability(request, "monitoring.send")
 
     with get_db() as conn:
         addr = conn.execute(
@@ -1168,7 +1188,7 @@ def create_report(data: ReportIn, request: Request):
 # ---------- Отчёты Экипажа ----------
 @app.post("/api/crew/reports")
 def create_crew_report(data: CrewReportIn, request: Request):
-    user = require_role(request, "crew")
+    user = require_capability(request, "crew.report.send")
 
     text = data.text.strip()
 
@@ -1257,7 +1277,7 @@ def create_crew_report(data: CrewReportIn, request: Request):
 
 @app.get("/api/crew/reports")
 def list_crew_reports(request: Request):
-    user = require_role(request, "crew")
+    user = require_capability(request, "crew.report.view")
 
     with get_db() as conn:
         rows = conn.execute(
@@ -1359,7 +1379,7 @@ def list_crew_reports(request: Request):
 
 @app.get("/api/head/reports")
 def list_head_reports(request: Request):
-    user = require_role(request, "head")
+    user = require_capability(request, "crew.report.moderate")
 
     with get_db() as conn:
         rows = conn.execute(
@@ -1422,7 +1442,7 @@ def list_head_reports(request: Request):
 
 @app.get("/api/head/reports/{report_id}/comments")
 def list_head_report_comments(report_id: int, request: Request):
-    user = require_role(request, "head")
+    user = require_capability(request, "crew.report.moderate")
 
     with get_db() as conn:
         report = conn.execute(
@@ -1498,7 +1518,7 @@ def create_head_report_comment(
     data: HeadReportCommentIn,
     request: Request,
 ):
-    user = require_role(request, "head")
+    user = require_capability(request, "crew.report.moderate")
 
     text = data.text.strip()
 
@@ -1591,7 +1611,7 @@ def list_reports(
     sort: str = "desc",
     limit: int = 200,
 ):
-    require_any(request, ["admin", "director"])
+    require_capability(request, "monitoring.view")
 
     with get_db() as conn:
         sql = """
@@ -1664,7 +1684,7 @@ def list_reports(
 # ---------- Задания ----------
 @app.post("/api/tasks")
 def create_task(data: TaskIn, request: Request):
-    user = require_any(request, ["admin", "director"])
+    user = require_capability(request, "task.create")
     with get_db() as conn:
         addr = conn.execute(
             "SELECT id FROM addresses WHERE id = ? AND active = 1",
@@ -1685,7 +1705,7 @@ def create_task(data: TaskIn, request: Request):
             (
                 data.address_id,
                 user["sub"],
-                get_base_role(user["role"]),
+                user["workplace"],
                 data.description.strip(),
                 1 if data.is_important else 0,
                 "open",
@@ -1731,7 +1751,7 @@ async def add_task_media(
     Файлы загружаются через /api/upload, а здесь получают постоянное
     имя и запись в таблице media.
     """
-    user = require_any(request, ["admin", "director", "service"])
+    user = require_capability(request, "task.media")
 
     data = await request.json()
     filenames = data.get("filenames", [])
@@ -1765,7 +1785,7 @@ async def add_task_media(
             )
 
         if (
-            get_base_role(user["role"]) == "service"
+            user["workplace"] == "service"
             and task["workflow_status"] not in ("open", "rework")
         ):
             raise HTTPException(
@@ -1871,7 +1891,7 @@ def list_tasks(
     manufacturer: Optional[str] = None,
 ):
     user = get_current_user(request)
-    if get_base_role(user["role"]) == "service" and status != "open":
+    if user["workplace"] == "service" and status != "open":
         status = "open"
 
     with get_db() as conn:
@@ -1889,6 +1909,9 @@ def list_tasks(
             WHERE t.hidden = 0
         """
         params: list = []
+        scope_sql, scope_params = own_scope_clause(user, "t.created_by")
+        sql += scope_sql
+        params.extend(scope_params)
         if status and status != "all":
             sql += " AND t.status = ?"; params.append(status)
         if city:
@@ -2039,7 +2062,7 @@ def get_task_for_workflow(conn, task_id: int):
 
 def enforce_director_task_scope(user: dict, task) -> None:
     if (
-        get_base_role(user["role"]) == "director"
+        user["workplace"] == "director"
         and get_base_role(task["created_by_role"] or "") != "director"
     ):
         raise HTTPException(
@@ -2116,7 +2139,7 @@ def set_task_workflow_status(
 
 @app.post("/api/tasks/{task_id}/complete")
 def complete_task(task_id: int, request: Request):
-    user = require_any(request, ["service"])
+    user = require_capability(request, "task.complete")
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
@@ -2160,7 +2183,7 @@ def complete_task(task_id: int, request: Request):
 
 @app.post("/api/tasks/{task_id}/approve")
 def approve_task(task_id: int, request: Request):
-    user = require_any(request, ["admin", "director"])
+    user = require_capability(request, "task.approve")
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
@@ -2203,7 +2226,7 @@ def approve_task(task_id: int, request: Request):
 
 @app.post("/api/tasks/{task_id}/rework")
 def rework_task(task_id: int, request: Request):
-    user = require_any(request, ["admin", "director"])
+    user = require_capability(request, "task.rework")
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
@@ -2249,7 +2272,7 @@ def rework_task(task_id: int, request: Request):
 
 @app.post("/api/tasks/{task_id}/close")
 def close_task(task_id: int, request: Request):
-    user = require_any(request, ["admin", "director"])
+    user = require_capability(request, "task.close")
 
     with get_db() as conn:
         task = get_task_for_workflow(conn, task_id)
@@ -2361,7 +2384,7 @@ def task_status_history(task_id: int, request: Request):
 def delete_task(task_id: int, request: Request):
     # Оставляем старый endpoint для совместимости,
     # но физического удаления больше нет.
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "task.manage")
 
     with get_db() as conn:
         row = conn.execute(
@@ -2387,7 +2410,7 @@ def delete_task(task_id: int, request: Request):
 @app.post("/api/feed/{item_type}/{item_id}/hide")
 def hide_feed_item(item_type: str, item_id: int, request: Request):
     """Скрыть запись из отображения всех ролей без физического удаления."""
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "feed.hide")
 
     table_by_type = {
         "task": "tasks",
@@ -2446,7 +2469,7 @@ def export_excel(
     city: Optional[str] = None,
     manufacturer: Optional[str] = None,
 ):
-    require_any(request, ["admin", "director"])
+    require_capability(request, "export.excel")
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
@@ -2549,18 +2572,6 @@ def export_excel(
 # ---------- Запуск ----------
 
 # ========== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И НАСТРОЙКАМИ (АДМИН) ==========
-USER_ROLES = (
-    "admin",
-    "service",
-    "director",
-    "crew",
-    "head",
-    "staff",
-    "administrator",
-    "curator",
-)
-
-
 class UserIn(BaseModel):
     login: str
     password: str
@@ -2595,7 +2606,7 @@ class LegalEntityIn(BaseModel):
 def list_users_api(request: Request):
     # Сначала определяем область видимости, потом открываем соединение:
     # контекст юрлица применяется при выдаче соединения.
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "users.manage")
     placeholders = ",".join(["?"] * len(user["scope_entity_ids"]))
     with get_db() as conn:
         rows = conn.execute(
@@ -2620,9 +2631,9 @@ def user_in_scope(conn, user: dict, target_user_id: int) -> bool:
 
 @app.post("/api/users")
 def create_user_api(data: UserIn, request: Request):
-    user = require_any(request, ["admin"])
-    if data.role not in USER_ROLES:
-        raise HTTPException(status_code=400, detail="Неверная роль")
+    user = require_capability(request, "users.manage")
+    if not load_role_checked(data.role):
+        raise HTTPException(status_code=400, detail="Роль недоступна")
 
     if data.legal_entity_id is not None:
         allowed_ids = {option["id"] for option in user_entity_options(user)}
@@ -2671,7 +2682,7 @@ def create_user_api(data: UserIn, request: Request):
 
 @app.put("/api/users/{user_id}/password")
 def change_password_api(user_id: int, data: PasswordIn, request: Request):
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "users.manage")
     with get_db() as conn:
         if not user_in_scope(conn, user, user_id):
             raise HTTPException(status_code=403, detail="Пользователь вне вашего юрлица")
@@ -2706,9 +2717,18 @@ def change_password_api(user_id: int, data: PasswordIn, request: Request):
 
 
 # ---------- Юрлица группы и членство ----------
+def load_role_checked(code: str):
+    """Роль из конструктора: существует и активна."""
+    with get_db() as conn:
+        role = load_role(conn, code)
+    if not role or not role["active"]:
+        return None
+    return role
+
+
 def require_group_scope_manager(request: Request) -> dict:
     """Управление юрлицами доступно групповому администратору в сводном режиме."""
-    user = require_any(request, ["admin"])
+    user = require_capability(request, "users.manage")
     if not (user.get("is_group_admin") and user.get("all_entities")):
         raise HTTPException(
             status_code=403,
@@ -2875,6 +2895,197 @@ def admin_update_legal_entity(entity_id: int, data: LegalEntityIn, request: Requ
     return {"ok": True}
 
 
+ROLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+
+
+class RoleIn(BaseModel):
+    code: Optional[str] = None
+    name: str
+    workplace: str = "service"
+    scope: str = "entity"
+    capabilities: List[str] = []
+    active: Optional[bool] = None
+
+
+def roles_with_capabilities(conn) -> list:
+    role_rows = conn.execute(
+        """
+        SELECT id, code, name, workplace, scope, is_system, active
+        FROM roles
+        ORDER BY is_system DESC, name
+        """
+    ).fetchall()
+    links = conn.execute(
+        "SELECT role_id, capability_code FROM role_capabilities"
+    ).fetchall()
+    usage = conn.execute(
+        "SELECT role, COUNT(*) AS cnt FROM user_entities GROUP BY role"
+    ).fetchall()
+
+    capabilities_by_role = {}
+    for link in links:
+        capabilities_by_role.setdefault(link["role_id"], []).append(link["capability_code"])
+
+    usage_by_code = {row["role"]: row["cnt"] for row in usage}
+
+    return [
+        {
+            "id": row["id"],
+            "code": row["code"],
+            "name": row["name"],
+            "workplace": row["workplace"],
+            "scope": row["scope"],
+            "is_system": bool(row["is_system"]),
+            "active": bool(row["active"]),
+            "capabilities": sorted(capabilities_by_role.get(row["id"], [])),
+            "users": usage_by_code.get(row["code"], 0),
+        }
+        for row in role_rows
+    ]
+
+
+def validate_role_payload(data: RoleIn, existing_code: str = None):
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите название роли")
+
+    workplace = normalize_workplace(data.workplace)
+    scope = normalize_scope(data.scope)
+
+    unknown = unknown_capabilities(data.capabilities or [])
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неизвестные возможности: {', '.join(unknown)}",
+        )
+
+    code = (data.code or existing_code or "").strip().lower()
+    if not ROLE_CODE_RE.match(code):
+        raise HTTPException(
+            status_code=400,
+            detail="Код роли: латиница, цифры и подчёркивание, начинается с буквы",
+        )
+
+    return code, name, workplace, scope, sorted(set(data.capabilities or []))
+
+
+@app.get("/api/admin/roles")
+def admin_list_roles(request: Request):
+    require_capability(request, "roles.manage")
+    with get_db() as conn:
+        return {
+            "capabilities": capability_catalog(),
+            "workplaces": list(WORKPLACES),
+            "scopes": list(SCOPES),
+            "roles": roles_with_capabilities(conn),
+        }
+
+
+@app.post("/api/admin/roles")
+def admin_create_role(data: RoleIn, request: Request):
+    user = require_capability(request, "roles.manage")
+    code, name, workplace, scope, capabilities = validate_role_payload(data)
+
+    with get_db() as conn:
+        exists = conn.execute("SELECT 1 FROM roles WHERE code = ?", (code,)).fetchone()
+        if exists:
+            raise HTTPException(status_code=400, detail="Роль с таким кодом уже есть")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO roles (code, name, workplace, scope, is_system, active)
+            VALUES (?, ?, ?, ?, 0, 1)
+            """,
+            (code, name, workplace, scope),
+        )
+        role_id = cursor.lastrowid
+        for capability_code in capabilities:
+            conn.execute(
+                "INSERT INTO role_capabilities (role_id, capability_code) VALUES (?, ?)",
+                (role_id, capability_code),
+            )
+        write_audit(
+            conn,
+            user,
+            "role.create",
+            "role",
+            code,
+            after={"name": name, "workplace": workplace, "scope": scope,
+                   "capabilities": capabilities},
+            request=request,
+        )
+
+    return {"ok": True, "id": role_id, "code": code}
+
+
+@app.put("/api/admin/roles/{role_id}")
+def admin_update_role(role_id: int, data: RoleIn, request: Request):
+    user = require_capability(request, "roles.manage")
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, code, name, workplace, scope, is_system, active FROM roles WHERE id = ?",
+            (role_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Роль не найдена")
+        if row["is_system"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Системную роль изменить нельзя — создайте свою на её основе",
+            )
+
+        code, name, workplace, scope, capabilities = validate_role_payload(
+            data, existing_code=row["code"]
+        )
+        active = int(row["active"]) if data.active is None else (1 if data.active else 0)
+
+        if not active and int(row["active"]):
+            assigned = conn.execute(
+                "SELECT COUNT(*) FROM user_entities WHERE role = ?", (row["code"],)
+            ).fetchone()[0]
+            if assigned:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Роль назначена {assigned} пользовател(ю/ям): сначала смените им роль",
+                )
+
+        before = {
+            "name": row["name"],
+            "workplace": row["workplace"],
+            "scope": row["scope"],
+            "active": bool(row["active"]),
+        }
+
+        conn.execute(
+            """
+            UPDATE roles
+            SET name = ?, workplace = ?, scope = ?, active = ?
+            WHERE id = ?
+            """,
+            (name, workplace, scope, active, role_id),
+        )
+        conn.execute("DELETE FROM role_capabilities WHERE role_id = ?", (role_id,))
+        for capability_code in capabilities:
+            conn.execute(
+                "INSERT INTO role_capabilities (role_id, capability_code) VALUES (?, ?)",
+                (role_id, capability_code),
+            )
+
+        write_audit(
+            conn,
+            user,
+            "role.update",
+            "role",
+            row["code"],
+            before=before,
+            after={"name": name, "workplace": workplace, "scope": scope,
+                   "active": bool(active), "capabilities": capabilities},
+            request=request,
+        )
+
+    return {"ok": True}
+
+
 @app.get("/api/admin/users")
 def admin_list_users(request: Request):
     """Пользователи с членством по юрлицам — для управления доступом."""
@@ -2933,8 +3144,8 @@ def admin_list_users(request: Request):
 @app.put("/api/admin/users/{user_id}/entities")
 def admin_update_user_entities(user_id: int, data: MembershipIn, request: Request):
     user = require_group_scope_manager(request)
-    if data.role not in USER_ROLES:
-        raise HTTPException(status_code=400, detail="Неверная роль")
+    if not load_role_checked(data.role):
+        raise HTTPException(status_code=400, detail="Роль недоступна")
 
     requested = {item.legal_entity_id: bool(item.is_default) for item in data.entities}
     if not requested:
@@ -2959,11 +3170,16 @@ def admin_update_user_entities(user_id: int, data: MembershipIn, request: Reques
             )
 
         # В группе обязан остаться хотя бы один администратор.
-        if get_base_role(data.role) != "admin":
+        target_role = load_role(conn, data.role)
+        if not target_role or not target_role["active"]:
+            raise HTTPException(status_code=400, detail="Роль недоступна")
+
+        if target_role["workplace"] != "admin":
             other_admins = conn.execute(
                 """
-                SELECT COUNT(*) FROM users
-                WHERE id <> ? AND role IN ('admin', 'administrator')
+                SELECT COUNT(*) FROM users u
+                JOIN roles r ON r.code = u.role
+                WHERE u.id <> ? AND r.workplace = 'admin'
                 """,
                 (user_id,),
             ).fetchone()[0]
@@ -3073,13 +3289,8 @@ def get_comments(task_id: int, request: Request):
 
 @app.post("/api/comments")
 def add_comment(data: CommentIn, request: Request):
-    user = get_current_user(request)
+    user = require_capability(request, "task.comment")
     import json
-    if get_base_role(user["role"]) == "director":
-        raise HTTPException(
-            status_code=403,
-            detail="Директор пишет только отдельные комментарии"
-        )
 
     with get_db() as conn:
         task = conn.execute(
@@ -3104,7 +3315,7 @@ def add_comment(data: CommentIn, request: Request):
             )
 
         if (
-            get_base_role(user["role"]) == "service"
+            user["workplace"] == "service"
             and task["workflow_status"] not in ("open", "rework")
         ):
             raise HTTPException(
@@ -3137,7 +3348,7 @@ class TaskUpdateIn(BaseModel):
 
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: TaskUpdateIn, request: Request):
-    require_any(request, ["admin"])
+    require_capability(request, "task.comment")
     with get_db() as conn:
         task = conn.execute(
             """
@@ -3315,7 +3526,8 @@ def send_monitoring(data: ReportIn, request: Request):
         entity_id = require_entity_scope(user)
 
         # Комментарий директора хранится отдельно
-        if get_base_role(user["role"]) == "director":
+        if user["workplace"] == "director":
+            ensure_capability(user, "monitoring.comment")
             cursor = conn.execute(
                 """
                 INSERT INTO director_comments
@@ -3340,6 +3552,7 @@ def send_monitoring(data: ReportIn, request: Request):
             }
 
         # Обычное сообщение мониторинга
+        ensure_capability(user, "monitoring.send")
         cursor = conn.execute(
             """
             INSERT INTO reports
@@ -3415,23 +3628,26 @@ def send_monitoring(data: ReportIn, request: Request):
 @app.get("/api/director/feed")
 def director_feed(request: Request):
     """Смешанная лента заданий и мониторинга для директора"""
-    get_current_user(request)
     import json
     with get_db() as conn:
+        user = get_current_user(request)
+        task_scope_sql, task_scope_params = own_scope_clause(user, "t.created_by")
+        report_scope_sql, report_scope_params = own_scope_clause(user, "r.user_id")
+
         # Задания
-        tasks = conn.execute("""
+        tasks = conn.execute(f"""
             SELECT 'task' as type, t.id, t.description as text, t.created_at,
                    a.city, a.address_name, a.manufacturer,
                    u.login as author, t.status, t.workflow_status, t.is_important, t.close_reason
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
-            WHERE t.hidden = 0
+            WHERE t.hidden = 0{task_scope_sql}
             ORDER BY t.created_at DESC LIMIT 200
-        """).fetchall()
+        """, tuple(task_scope_params)).fetchall()
         
         # Мониторинг (последние записи)
-        monitoring = conn.execute("""
+        monitoring = conn.execute(f"""
             SELECT 'monitoring' as type, r.id, r.text, r.created_at,
                    a.city, a.address_name, a.manufacturer,
                    u.login as author, NULL as status, 0 as is_important, NULL as close_reason
@@ -3439,9 +3655,9 @@ def director_feed(request: Request):
             JOIN addresses a ON a.id = r.address_id
             JOIN users u ON u.id = r.user_id
             WHERE r.task_id IS NULL
-              AND r.hidden = 0
+              AND r.hidden = 0{report_scope_sql}
             ORDER BY r.created_at DESC LIMIT 200
-        """).fetchall()
+        """, tuple(report_scope_params)).fetchall()
         
         # Объединяем и сортируем по дате
         feed = []
@@ -3501,7 +3717,7 @@ class DirectorCommentIn(BaseModel):
 @app.post("/api/director/comments")
 def add_director_comment(data: DirectorCommentIn, request: Request):
     """Директор оставляет комментарий"""
-    user = require_any(request, ["admin", "director"])
+    user = require_capability(request, "monitoring.comment")
     if data.item_type not in ("task", "monitoring"):
         raise HTTPException(status_code=400, detail="Неверный тип")
     if not data.text.strip() and not data.media:
@@ -3666,10 +3882,14 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
     with get_db() as conn:
         result = []
 
+        # Роль с областью «только свои» видит лишь собственные записи.
+        task_scope_sql, task_scope_params = own_scope_clause(user, "t.created_by")
+        report_scope_sql, report_scope_params = own_scope_clause(user, "r.user_id")
+
         # =========================================================
         # 1. ЗАДАНИЯ
         # =========================================================
-        tasks = conn.execute("""
+        tasks = conn.execute(f"""
             SELECT
                 t.id,
                 t.address_id,
@@ -3688,10 +3908,10 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
-            WHERE t.hidden = 0
+            WHERE t.hidden = 0{task_scope_sql}
             ORDER BY t.created_at DESC
             LIMIT ?
-        """, (fetch_limit,)).fetchall()
+        """, (*task_scope_params, fetch_limit)).fetchall()
 
         for task in tasks:
             item = {
@@ -3847,7 +4067,7 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
         # =========================================================
         # Каждая запись reports = отдельная карточка мониторинга.
         # Сообщения одного адреса больше не объединяются.
-        monitoring_reports = conn.execute("""
+        monitoring_reports = conn.execute(f"""
             SELECT
                 r.id,
                 r.address_id,
@@ -3865,10 +4085,10 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
               ON a.id = r.address_id
             WHERE r.task_id IS NULL
               AND r.hidden = 0
-              AND a.active = 1
+              AND a.active = 1{report_scope_sql}
             ORDER BY r.created_at DESC
             LIMIT ?
-        """, (fetch_limit,)).fetchall()
+        """, (*report_scope_params, fetch_limit)).fetchall()
 
         for r in monitoring_reports:
             report_id = r["id"]
@@ -3989,7 +4209,7 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
         # =========================================================
         # Отчёты экипажа видят только Admin и Director.
         # Они идут отдельным типом crew_report.
-        if get_base_role(user.get("role", "")) in ("admin", "director", "head"):
+        if user.get("workplace") in ("admin", "director", "head"):
             crew_reports = conn.execute("""
                 SELECT
                     cr.id,

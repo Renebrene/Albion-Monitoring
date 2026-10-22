@@ -231,7 +231,7 @@ class ApplicationSmokeTests(unittest.TestCase):
             "Головная организация",
         )
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        self.assertEqual(versions, [1, 2, 3, 4])
+        self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
         # v4: юрлицо у рабочих таблиц, общий признак адреса и членство.
         task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
         self.assertIn("legal_entity_id", task_columns)
@@ -296,6 +296,8 @@ class ApplicationSmokeTests(unittest.TestCase):
                     (2, "soft_hide_and_original_filenames"),
                     (3, "sessions_audit_active"),
                     (4, "entity_scope"),
+                    (5, "roles_and_capabilities"),
+                    (6, "custom_role_codes"),
                 ],
             )
             existing_task = conn.execute("SELECT workflow_status, created_by_role, is_important FROM tasks WHERE id=1").fetchone()
@@ -305,7 +307,7 @@ class ApplicationSmokeTests(unittest.TestCase):
         from database import init_schema
         init_schema()
         with get_db() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 4)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 6)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 4)
 
     def test_address_limit_is_bounded(self):
@@ -1674,8 +1676,9 @@ class LegalEntityAdminTests(unittest.TestCase):
         finally:
             with get_db() as conn:
                 conn.execute("DELETE FROM legal_entities WHERE id = ?", (entity_id,))
-                conn.execute("UPDATE legal_entities SET active = 1 WHERE id = 1")
-            self._set_entity_active(self.ENTITY_ID, True)
+                # Возвращаем всем юрлицам исходное состояние: соседние тесты
+                # полагаются на два активных юрлица.
+                conn.execute("UPDATE legal_entities SET active = 1")
 
         self.assertTrue(get_db_audit("legal_entity.create"))
         self.assertTrue(get_db_audit("legal_entity.update"))
@@ -1890,3 +1893,247 @@ def get_db_audit(action):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoleConstructorTests(unittest.TestCase):
+    """Конструктор ролей: свои роли, возможности и область «только свои»."""
+
+    PASSWORD = "Role-Pass-1"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        password_hash = hash_password(cls.PASSWORD)
+        with get_db() as conn:
+            # Класс сам обеспечивает второе активное юрлицо: сводный режим
+            # доступен администратору только при двух и более юрлицах.
+            conn.execute(
+                """
+                INSERT INTO legal_entities (id, name, short_name, active)
+                VALUES (7, 'ООО Тестовое-роли', 'Тестовое-роли', 1)
+                ON CONFLICT(id) DO UPDATE SET active = 1
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO addresses (id, city, address_name, manufacturer,
+                                       legal_entity_id, shared)
+                VALUES (900, 'Тест-город', 'Тестовый адрес', 'Тест', 1, 0)
+                ON CONFLICT(id) DO UPDATE SET active = 1
+                """
+            )
+            conn.execute(
+                "DELETE FROM user_entities WHERE user_id IN (40, 41, 42)"
+            )
+            conn.execute("DELETE FROM auth_sessions WHERE user_id IN (40, 41, 42)")
+            conn.execute("DELETE FROM users WHERE id IN (40, 41, 42)")
+            conn.execute(
+                """
+                INSERT INTO users (id, login, password_hash, role, legal_entity_id)
+                VALUES (40, 'roles-admin', ?, 'admin', 1),
+                       (42, 'roles-other', ?, 'service', 1)
+                """,
+                (password_hash, password_hash),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+                VALUES (40, 1, 'admin', 1), (42, 1, 'service', 1)
+                """
+            )
+        cls.admin_headers = {"Authorization": f"Bearer {make_session_token(40, 'roles-admin', 'admin')}"}
+
+    @classmethod
+    def tearDownClass(cls):
+        with get_db() as conn:
+            conn.execute(
+                "DELETE FROM reports WHERE user_id IN (40, 41, 42) "
+                "OR text IN ('Свой мониторинг', 'Чужой мониторинг')"
+            )
+            conn.execute("DELETE FROM user_entities WHERE user_id IN (40, 41, 42)")
+            conn.execute("DELETE FROM auth_sessions WHERE user_id IN (40, 41, 42)")
+            conn.execute("DELETE FROM users WHERE id IN (40, 41, 42)")
+            conn.execute("DELETE FROM addresses WHERE id = 900")
+            conn.execute("DELETE FROM legal_entities WHERE id = 7")
+            conn.execute("DELETE FROM role_capabilities WHERE role_id IN (SELECT id FROM roles WHERE code LIKE 'qa_%')")
+            conn.execute("DELETE FROM roles WHERE code LIKE 'qa_%'")
+        cls.client.close()
+
+    def _group_admin(self):
+        headers = {"Authorization": f"Bearer {make_session_token(40, 'roles-admin', 'admin')}"}
+        response = self.client.post(
+            "/api/session/legal-entity", json={"legal_entity_id": None}, headers=headers
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return headers
+
+    def _create_role(self, headers, code, capabilities, scope="entity", workplace="service"):
+        response = self.client.post(
+            "/api/admin/roles",
+            json={
+                "code": code,
+                "name": f"Тестовая {code}",
+                "workplace": workplace,
+                "scope": scope,
+                "capabilities": capabilities,
+            },
+            headers=headers,
+        )
+        return response
+
+    def test_role_catalog_is_exposed(self):
+        data = self.client.get("/api/admin/roles", headers=self._group_admin()).json()
+        codes = {item["code"] for item in data["roles"]}
+        self.assertTrue({"admin", "service", "crew"}.issubset(codes), codes)
+        self.assertIn("task.approve", {item["code"] for item in data["capabilities"]})
+        admin_role = [item for item in data["roles"] if item["code"] == "admin"][0]
+        self.assertTrue(admin_role["is_system"])
+        self.assertGreater(len(admin_role["capabilities"]), 5)
+
+    def test_role_validation_and_system_protection(self):
+        headers = self._group_admin()
+
+        unknown = self._create_role(headers, "qa_bad_caps", ["nope.capability"])
+        self.assertEqual(unknown.status_code, 400)
+
+        bad_code = self._create_role(headers, "Плохой код", ["monitoring.send"])
+        self.assertEqual(bad_code.status_code, 400)
+
+        duplicate = self._create_role(headers, "admin", ["monitoring.send"])
+        self.assertEqual(duplicate.status_code, 400)
+
+        data = self.client.get("/api/admin/roles", headers=headers).json()
+        system_role = [item for item in data["roles"] if item["code"] == "service"][0]
+        protected = self.client.put(
+            f"/api/admin/roles/{system_role['id']}",
+            json={"name": "Изменённая", "workplace": "service", "scope": "own", "capabilities": []},
+            headers=headers,
+        )
+        self.assertEqual(protected.status_code, 400)
+        self.assertIn("Системную", protected.json()["detail"])
+
+    def test_custom_role_limits_actions(self):
+        headers = self._group_admin()
+        created = self._create_role(
+            headers, "qa_contractor", ["monitoring.send", "task.comment"], scope="own"
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        try:
+            with get_db() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO users (id, login, password_hash, role, legal_entity_id)
+                    VALUES (41, 'qa-contractor', ?, 'qa_contractor', 1)
+                    """,
+                    (hash_password(self.PASSWORD),),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+                    VALUES (41, 1, 'qa_contractor', 1)
+                    """
+                )
+
+            login = self.client.post(
+                "/api/login", json={"login": "qa-contractor", "password": self.PASSWORD}
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            payload = login.json()
+            self.assertEqual(payload["workplace"], "service")
+            self.assertEqual(payload["home"], "/staff")
+            self.assertIn("monitoring.send", payload["capabilities"])
+            self.assertNotIn("task.create", payload["capabilities"])
+
+            contractor = {"Authorization": f"Bearer {payload['token']}"}
+            me = self.client.get("/api/me", headers=contractor).json()
+            self.assertEqual(me["workplace"], "service")
+            self.assertEqual(me["data_scope"], "own")
+
+            # Возможности ограничивают действия: задания создавать нельзя.
+            self.assertEqual(
+                self.client.post(
+                    "/api/tasks",
+                    json={"address_id": 900, "description": "Нельзя"},
+                    headers=contractor,
+                ).status_code,
+                403,
+            )
+            # Мониторинг разрешён.
+            self.assertEqual(
+                self.client.post(
+                    "/api/monitoring",
+                    json={"address_id": 900, "text": "Свой мониторинг", "media": []},
+                    headers=contractor,
+                ).status_code,
+                200,
+            )
+            # Область «только свои»: чужой мониторинг в ленту не попадает.
+            other = self.client.post(
+                "/api/monitoring",
+                json={"address_id": 900, "text": "Чужой мониторинг", "media": []},
+                headers={"Authorization": f"Bearer {make_session_token(42, 'roles-other', 'service')}"},
+            )
+            self.assertEqual(other.status_code, 200, other.text)
+
+            feed = self.client.get("/api/feed?limit=50", headers=contractor).json()
+            texts = [item.get("text") for item in feed["items"]]
+            self.assertIn("Свой мониторинг", texts)
+            self.assertNotIn("Чужой мониторинг", texts)
+
+            # Смена роли действует без перевыпуска токена.
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE user_entities SET role = 'service' WHERE user_id = 41"
+                )
+            self.assertEqual(
+                self.client.post(
+                    "/api/tasks",
+                    json={"address_id": 900, "description": "Теперь нельзя"},
+                    headers=contractor,
+                ).status_code,
+                403,
+            )
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE user_entities SET role = 'qa_contractor' WHERE user_id = 41"
+                )
+        finally:
+            with get_db() as conn:
+                # Отчёты ссылаются на пользователя — сначала они.
+                conn.execute("DELETE FROM media WHERE report_id IN ("
+                             "SELECT id FROM reports WHERE user_id IN (41, 42))")
+                conn.execute("DELETE FROM reports WHERE user_id IN (41, 42)")
+                conn.execute("DELETE FROM auth_sessions WHERE user_id = 41")
+                conn.execute("DELETE FROM user_entities WHERE user_id = 41")
+                conn.execute("DELETE FROM users WHERE id = 41")
+
+    def test_disabling_assigned_role_is_blocked(self):
+        headers = self._group_admin()
+        created = self._create_role(headers, "qa_assigned", ["monitoring.send"])
+        self.assertEqual(created.status_code, 200, created.text)
+        role_id = created.json()["id"]
+
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO user_entities (user_id, legal_entity_id, role, is_default) "
+                "VALUES (42, 7, 'qa_assigned', 0)"
+            )
+        try:
+            blocked = self.client.put(
+                f"/api/admin/roles/{role_id}",
+                json={
+                    "name": "Тестовая qa_assigned",
+                    "workplace": "service",
+                    "scope": "entity",
+                    "capabilities": ["monitoring.send"],
+                    "active": False,
+                },
+                headers=headers,
+            )
+            self.assertEqual(blocked.status_code, 400, blocked.text)
+            self.assertIn("назначена", blocked.json()["detail"])
+        finally:
+            with get_db() as conn:
+                conn.execute(
+                    "DELETE FROM user_entities WHERE role = 'qa_assigned'"
+                )

@@ -348,6 +348,259 @@
     }
   }
 
+  // ---------- Роли и возможности ----------
+  const WORKPLACE_LABELS = {
+    admin: "Администратор",
+    service: "Сервис",
+    director: "Лента и проверка",
+    crew: "Экипаж",
+    head: "Руководитель"
+  };
+  const SCOPE_LABELS = {
+    entity: "всё юрлицо",
+    own: "только свои"
+  };
+
+  const roleCatalog = {
+    loaded: false,
+    capabilities: [],
+    roles: []
+  };
+
+  async function loadRoles() {
+    const section = document.getElementById("rolesSection");
+    if (!section) return;
+
+    if (!isGroupScope()) {
+      section.style.display = "none";
+      return;
+    }
+
+    section.style.display = "";
+    const data = await API_SETTINGS("/api/admin/roles");
+    roleCatalog.loaded = true;
+    roleCatalog.capabilities = data.capabilities || [];
+    roleCatalog.roles = data.roles || [];
+    renderRoleCapabilityOptions();
+    renderRoles(roleCatalog.roles);
+  }
+
+  function renderRoleCapabilityOptions() {
+    const container = document.getElementById("roleCapabilities");
+    if (!container) return;
+    container.dataset.target = "create";
+    container.innerHTML = roleCatalog.capabilities
+      .map(
+        item => `
+        <label title="${escapeHtml(item.description || "")}">
+          <input type="checkbox" data-capability="${item.code}">
+          ${escapeHtml(item.description || item.code)}
+          <span class="user-role">${escapeHtml(item.domain)}</span>
+        </label>`
+      )
+      .join("");
+  }
+
+  function selectedCapabilities(container) {
+    return Array.from(container.querySelectorAll("[data-capability]:checked")).map(
+      input => input.dataset.capability
+    );
+  }
+
+  function rolePayload(container, prefix) {
+    return {
+      name: document.getElementById(`${prefix}Name`).value,
+      code: document.getElementById(`${prefix}Code`) ? document.getElementById(`${prefix}Code`).value : undefined,
+      workplace: document.getElementById(`${prefix}Workplace`).value,
+      scope: document.getElementById(`${prefix}Scope`).value,
+      capabilities: selectedCapabilities(container)
+    };
+  }
+
+  function renderRoles(roles) {
+    const container = document.getElementById("rolesList");
+    if (!container) return;
+
+    container.innerHTML = roles
+      .map(
+        role => `
+      <div class="user-row" data-role-row="${role.id}">
+        <div class="user-main">
+          <div class="user-login">
+            ${escapeHtml(role.name)}
+            ${role.is_system ? '<span class="entity-badge">системная</span>' : ""}
+            ${role.active ? "" : '<span class="entity-badge off">выключена</span>'}
+          </div>
+          <div class="user-role">
+            ${escapeHtml(role.code)} · ${escapeHtml(WORKPLACE_LABELS[role.workplace] || role.workplace)}
+            · ${escapeHtml(SCOPE_LABELS[role.scope] || role.scope)}
+            · возможностей: ${role.capabilities.length} · пользователей: ${role.users}
+          </div>
+        </div>
+        <div class="user-actions">
+          <button type="button" class="user-password-btn" data-role-copy="${role.id}">Копировать</button>
+          ${
+            role.is_system
+              ? ""
+              : `<button type="button" class="user-password-btn" data-role-edit="${role.id}">Изменить</button>
+                 <button type="button" class="user-password-btn" data-role-toggle="${role.id}">
+                   ${role.active ? "Выключить" : "Включить"}
+                 </button>`
+          }
+        </div>
+      </div>`
+      )
+      .join("");
+
+    container.querySelectorAll("[data-role-copy]").forEach(button => {
+      button.addEventListener("click", () => {
+        const role = roleCatalog.roles.find(item => item.id === Number(button.dataset.roleCopy));
+        if (!role) return;
+        const nameInput = document.getElementById("newRoleName");
+        const codeInput = document.getElementById("newRoleCode");
+        nameInput.value = `${role.name} (копия)`;
+        codeInput.value = `${role.code}_copy`;
+        document.getElementById("newRoleWorkplace").value = role.workplace;
+        document.getElementById("newRoleScope").value = role.scope;
+        const capabilityBox = document.getElementById("roleCapabilities");
+        capabilityBox.querySelectorAll("[data-capability]").forEach(input => {
+          input.checked = role.capabilities.includes(input.dataset.capability);
+        });
+        setStatus(`Скопированы настройки роли «${role.name}»`);
+        setTimeout(() => setStatus(""), 1800);
+      });
+    });
+
+    container.querySelectorAll("[data-role-toggle]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const role = roleCatalog.roles.find(item => item.id === Number(button.dataset.roleToggle));
+        if (!role) return;
+        try {
+          await API_SETTINGS(`/api/admin/roles/${role.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: role.name,
+              workplace: role.workplace,
+              scope: role.scope,
+              capabilities: role.capabilities,
+              active: !role.active
+            })
+          });
+          await loadRoles();
+          setStatus(role.active ? "Роль выключена" : "Роль включена");
+          setTimeout(() => setStatus(""), 1800);
+        } catch (err) {
+          setStatus(err.message || "Не удалось изменить роль", true);
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-role-edit]").forEach(button => {
+      button.addEventListener("click", () => openRoleEditor(Number(button.dataset.roleEdit)));
+    });
+  }
+
+  function openRoleEditor(roleId) {
+    const role = roleCatalog.roles.find(item => item.id === roleId);
+    const row = document.querySelector(`[data-role-row="${roleId}"]`);
+    if (!role || !row) return;
+    if (row.querySelector(".entity-editor")) {
+      row.querySelector(".entity-editor").remove();
+      return;
+    }
+
+    const editor = document.createElement("div");
+    editor.className = "entity-editor";
+    editor.innerHTML = `
+      <div class="entity-inline-form">
+        <input type="text" id="roleEditName" value="${escapeHtml(role.name)}" placeholder="Название">
+        <select id="roleEditWorkplace">
+          ${Object.entries(WORKPLACE_LABELS)
+            .map(([value, label]) =>
+              `<option value="${value}" ${value === role.workplace ? "selected" : ""}>${label}</option>`
+            )
+            .join("")}
+        </select>
+        <select id="roleEditScope">
+          ${Object.entries(SCOPE_LABELS)
+            .map(([value, label]) =>
+              `<option value="${value}" ${value === role.scope ? "selected" : ""}>${label}</option>`
+            )
+            .join("")}
+        </select>
+      </div>
+      <div class="entity-editor-grid">
+        ${roleCatalog.capabilities
+          .map(
+            item => `
+          <label title="${escapeHtml(item.description || "")}">
+            <input type="checkbox" data-capability="${item.code}"
+              ${role.capabilities.includes(item.code) ? "checked" : ""}>
+            ${escapeHtml(item.description || item.code)}
+          </label>`
+          )
+          .join("")}
+      </div>
+      <div class="entity-editor-actions">
+        <button type="button" class="settings-create-btn" id="roleEditSave">Сохранить роль</button>
+        <button type="button" class="user-password-btn" id="roleEditCancel">Отмена</button>
+      </div>
+    `;
+    row.appendChild(editor);
+
+    editor.querySelector("#roleEditCancel").addEventListener("click", () => editor.remove());
+    editor.querySelector("#roleEditSave").addEventListener("click", async () => {
+      try {
+        await API_SETTINGS(`/api/admin/roles/${roleId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: editor.querySelector("#roleEditName").value,
+            workplace: editor.querySelector("#roleEditWorkplace").value,
+            scope: editor.querySelector("#roleEditScope").value,
+            capabilities: selectedCapabilities(editor)
+          })
+        });
+        await loadRoles();
+        setStatus("Роль сохранена");
+        setTimeout(() => setStatus(""), 1800);
+      } catch (err) {
+        setStatus(err.message || "Не удалось сохранить роль", true);
+      }
+    });
+  }
+
+  async function createRole() {
+    const container = document.getElementById("roleCapabilities");
+    const name = document.getElementById("newRoleName");
+    const code = document.getElementById("newRoleCode");
+    if (!container || !name || !code) return;
+
+    if (!name.value.trim() || !code.value.trim()) {
+      setStatus("Укажите название и код роли", true);
+      return;
+    }
+
+    try {
+      await API_SETTINGS("/api/admin/roles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rolePayload(container, "newRole"))
+      });
+      name.value = "";
+      code.value = "";
+      container.querySelectorAll("[data-capability]").forEach(input => {
+        input.checked = false;
+      });
+      await loadRoles();
+      setStatus("Роль создана");
+      setTimeout(() => setStatus(""), 1800);
+    } catch (err) {
+      setStatus(err.message || "Не удалось создать роль", true);
+    }
+  }
+
   let managedUsers = [];
 
   function renderManagedUsers(users) {
@@ -430,8 +683,11 @@
       </div>
       <div class="entity-editor-row">
         <select id="accessRole${userId}">
-          ${Object.entries(roleNames)
-            .map(([value, label]) => `<option value="${value}">${label}</option>`)
+          ${(roleCatalog.roles.length
+            ? roleCatalog.roles.filter(role => role.active)
+            : Object.entries(roleNames).map(([code, label]) => ({ code, name: label }))
+          )
+            .map(role => `<option value="${role.code}">${escapeHtml(role.name)}</option>`)
             .join("")}
         </select>
         <button type="button" class="settings-create-btn" id="accessSave${userId}">Сохранить доступ</button>
@@ -513,6 +769,7 @@
   async function loadUsers() {
     if (isGroupScope()) {
       await loadEntities();
+      await loadRoles();
       const users = await API_SETTINGS("/api/admin/users");
       renderManagedUsers(users);
       return;
@@ -703,7 +960,7 @@
     }
 
     // Настройки доступны администратору и профилю administrator.
-    if (!me || window.getBaseRole(me.role) !== "admin") {
+    if (!me || me.workplace !== "admin") {
       toggle.style.display = "none";
       panel.style.display = "none";
       return;
@@ -751,6 +1008,9 @@
 
     const createEntityButton = document.getElementById("createEntityBtn");
     if (createEntityButton) createEntityButton.addEventListener("click", createEntity);
+
+    const createRoleButton = document.getElementById("createRoleBtn");
+    if (createRoleButton) createRoleButton.addEventListener("click", createRole);
 
     // Переключатель юрлица перезагружает страницу, поэтому режим узнаём заново
     // после каждого открытия панели.

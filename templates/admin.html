@@ -1364,6 +1364,46 @@
 
   </div>
 
+  <div class="settings-section" id="rolesSection" style="display:none">
+
+    <div class="settings-section-title">
+      РОЛИ И ВОЗМОЖНОСТИ
+    </div>
+
+    <p class="settings-help">
+      Роль — это набор возможностей и рабочее место (какую страницу видит
+      пользователь). Системные роли изменить нельзя, но можно скопировать и
+      настроить свою.
+    </p>
+
+    <div id="rolesList" class="users-list"></div>
+
+    <div class="settings-subtitle">
+      НОВАЯ РОЛЬ
+    </div>
+
+    <div class="new-user-form">
+      <input type="text" id="newRoleName" placeholder="Название роли" autocomplete="off">
+      <input type="text" id="newRoleCode" placeholder="Код (латиницей)" autocomplete="off">
+      <select id="newRoleWorkplace">
+        <option value="service">Рабочее место: Сервис</option>
+        <option value="director">Рабочее место: Лента и проверка</option>
+        <option value="crew">Рабочее место: Экипаж</option>
+        <option value="head">Рабочее место: Руководитель</option>
+        <option value="admin">Рабочее место: Администратор</option>
+      </select>
+      <select id="newRoleScope">
+        <option value="entity">Данные: всё юрлицо</option>
+        <option value="own">Данные: только свои</option>
+      </select>
+      <div id="roleCapabilities" class="entity-editor-grid"></div>
+      <button type="button" class="settings-create-btn" id="createRoleBtn">
+        Создать роль
+      </button>
+    </div>
+
+  </div>
+
   <div class="settings-section">
 
     <div class="settings-section-title">

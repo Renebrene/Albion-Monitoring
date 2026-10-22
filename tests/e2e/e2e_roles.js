@@ -556,6 +556,84 @@ try {
     await page.close();
   }
 
+  // ------------------------------------------------------------------
+  // 10. Конструктор ролей: своя роль ограничивает действия
+  // ------------------------------------------------------------------
+  {
+    const page = await newPage();
+    await login(page, "scope-admin", "/admin");
+    await page.selectOption("#entityScope", "__all__");
+    await page.waitForTimeout(2500);
+
+    await page.click("#settingsToggle");
+    await page.waitForSelector("#settingsPanel.open");
+    await page.waitForSelector("#rolesSection", { state: "visible", timeout: 15000 });
+    await page.waitForTimeout(800);
+
+    const systemRoles = await page.locator("#rolesList .user-row").count();
+    assert.ok(systemRoles >= 8, `ожидали системные роли, получили ${systemRoles}`);
+    pass("role catalog visible", `${systemRoles} roles`);
+
+    await page.fill("#newRoleName", "Ограниченный подрядчик");
+    await page.fill("#newRoleCode", "e2e_limited");
+    await page.selectOption("#newRoleWorkplace", "service");
+    await page.selectOption("#newRoleScope", "own");
+    await page.locator('#roleCapabilities [data-capability="monitoring.send"]').check();
+    await page.click("#createRoleBtn");
+    await page.waitForTimeout(1500);
+
+    const created = page.locator("#rolesList .user-row").filter({ hasText: "Ограниченный подрядчик" });
+    assert.equal(await created.count(), 1, "роль не появилась в списке");
+    pass("custom role created from UI", "e2e_limited");
+
+    // Назначаем роль сервису через редактор доступа.
+    const userRow = page.locator("#usersList .user-row").filter({ hasText: "service" }).first();
+    await userRow.locator("[data-user-access]").click();
+    await page.waitForTimeout(400);
+    const userId = await userRow.getAttribute("data-user-row");
+    const roleSelect = userRow.locator(`#accessRole${userId}`);
+    const options = await roleSelect.locator("option").allTextContents();
+    assert.ok(
+      options.some(text => text.includes("Ограниченный подрядчик")),
+      `своей роли нет в списке доступа: ${options.join(", ")}`,
+    );
+    await roleSelect.selectOption({ label: "Ограниченный подрядчик" });
+    await userRow.locator(`#accessSave${userId}`).click();
+    await page.waitForTimeout(1500);
+    pass("custom role assigned to user");
+
+    // Проверяем ограничения у самого пользователя.
+    const limited = await newPage();
+    await login(limited, "service", "/staff");
+    const checks = await limited.evaluate(async () => {
+      const token = localStorage.getItem("token");
+      const headers = { "Content-Type": "application/json", Authorization: "Bearer " + token };
+      const task = await fetch("/api/tasks", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ address_id: 1, description: "E2E ограниченная роль" }),
+      });
+      const monitoring = await fetch("/api/monitoring", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ address_id: 1, text: "E2E мониторинг ограниченной роли", media: [] }),
+      });
+      return { task: task.status, monitoring: monitoring.status };
+    });
+    assert.equal(checks.task, 403, `создание задания должно быть запрещено: ${checks.task}`);
+    assert.equal(checks.monitoring, 200, `мониторинг должен быть разрешён: ${checks.monitoring}`);
+    pass("custom role limits actions", `tasks=${checks.task}, monitoring=${checks.monitoring}`);
+
+    // Возвращаем сервису системную роль.
+    await userRow.locator("[data-user-access]").click();
+    await page.waitForTimeout(400);
+    await userRow.locator(`#accessRole${userId}`).selectOption({ label: "Сервис" });
+    await userRow.locator(`#accessSave${userId}`).click();
+    await page.waitForTimeout(1500);
+    await limited.close();
+    await page.close();
+  }
+
   console.log(`\nRESULT ${results.filter(item => item.ok).length}/${results.length} passed`);
   await browser.close();
   if (results.some(item => !item.ok)) process.exit(1);

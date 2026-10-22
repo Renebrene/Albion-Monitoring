@@ -29,6 +29,21 @@ window.getBaseRole = role => ({
   curator: "director",
 }[role] || role);
 
+// Рабочее место роли приходит с сервера: у своих ролей базовой роли нет.
+window.getWorkplace = () =>
+  localStorage.getItem("workplace") || window.getBaseRole(localStorage.getItem("role") || "");
+
+// Возможности роли: ими управляет конструктор ролей в админке.
+window.getCapabilities = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem("capabilities") || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+};
+window.hasCapability = code => window.getCapabilities().includes(code);
+
 // Единый JSON-запрос: Bearer, 401 → logout, читаемое сообщение об ошибке.
 window.apiFetch = async (url, options = {}) => {
   const token = localStorage.getItem("token");

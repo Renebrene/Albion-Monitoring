@@ -112,7 +112,7 @@ window.exportExcel = async () => {
 
 (async () => {
   const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
-  const baseRole = me ? window.getBaseRole(me.role) : null;
+  const baseRole = me ? (me.workplace || window.getBaseRole(me.role)) : null;
   if(!me || (baseRole !== "admin" && baseRole !== "director")){ location.href = "/"; return; }
   document.getElementById("whoami").textContent = me.login + " (" + me.role_label + ")";
 

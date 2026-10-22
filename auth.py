@@ -108,6 +108,51 @@ def available_entities(
     ]
 
 
+def load_role(conn, code: str):
+    """Роль из конструктора: рабочее место, область данных и возможности."""
+    row = conn.execute(
+        """
+        SELECT id, code, name, workplace, scope, is_system, active
+        FROM roles
+        WHERE code = ?
+        """,
+        (code,),
+    ).fetchone()
+    if not row:
+        return None
+
+    capabilities = {
+        item["capability_code"]
+        for item in conn.execute(
+            "SELECT capability_code FROM role_capabilities WHERE role_id = ?",
+            (row["id"],),
+        ).fetchall()
+    }
+
+    return {
+        "id": row["id"],
+        "code": row["code"],
+        "name": row["name"],
+        "workplace": row["workplace"] or "service",
+        "scope": row["scope"] or "entity",
+        "is_system": bool(row["is_system"]),
+        "active": bool(row["active"]),
+        "capabilities": capabilities,
+    }
+
+
+def role_code_for_entity(conn, user_id: int, entity_id: int, fallback: str) -> str:
+    """Роль пользователя в конкретном юрлице (иначе — его основная роль)."""
+    row = conn.execute(
+        """
+        SELECT role FROM user_entities
+        WHERE user_id = ? AND legal_entity_id = ?
+        """,
+        (user_id, entity_id),
+    ).fetchone()
+    return (row["role"] if row and row["role"] else fallback) or fallback
+
+
 def get_current_user(request: Request) -> dict:
     """Проверяет JWT и серверную сессию, возвращает актуальную роль и область видимости."""
     auth = request.headers.get("Authorization", "")
@@ -196,12 +241,31 @@ def get_current_user(request: Request) -> dict:
             active_entity_id = default_entity_id
         scope_entity_ids = [active_entity_id]
 
+    # Роль берётся в активном юрлице: у пользователя она может отличаться.
+    role_entity_id = active_entity_id or default_entity_id
+    with get_db() as conn:
+        role_code = role_code_for_entity(
+            conn, row["user_id"], role_entity_id, row["user_role"]
+        )
+        role = load_role(conn, role_code)
+
+    if not role or not role["active"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Роль недоступна: обратитесь к администратору",
+        )
+
+    is_group_admin = is_group_admin or role["workplace"] == "admin"
     set_tenant_context(scope_entity_ids, is_group_admin=all_entities)
 
     return {
         "sub": row["user_id"],
         "login": row["user_login"],
-        "role": row["user_role"],
+        "role": role["code"],
+        "role_label": role["name"],
+        "workplace": role["workplace"],
+        "data_scope": role["scope"],
+        "capabilities": sorted(role["capabilities"]),
         "session_id": row["id"],
         "legal_entity_id": active_entity_id,
         "scope_entity_ids": scope_entity_ids,
@@ -209,6 +273,10 @@ def get_current_user(request: Request) -> dict:
         "is_group_admin": is_group_admin,
         "token_version": int(row["token_version"] or 1),
     }
+
+
+def user_has(user: dict, capability: str) -> bool:
+    return capability in (user.get("capabilities") or ())
 
 
 def require_entity_scope(user: dict) -> int:
@@ -238,6 +306,37 @@ ROLE_BASE_ROLE = {
 def get_base_role(role: str) -> str:
     """Возвращает базовый функциональный профиль роли."""
     return ROLE_BASE_ROLE.get(role, role)
+
+
+def ensure_capability(user: dict, capability: str) -> None:
+    """Проверяет возможность у уже полученного пользователя."""
+    if not user_has(user, capability):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён",
+        )
+
+
+def require_capability(request: Request, capability: str) -> dict:
+    """Требует конкретную возможность роли."""
+    user = get_current_user(request)
+    if not user_has(user, capability):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён",
+        )
+    return user
+
+
+def require_capabilities(request: Request, capabilities: list) -> dict:
+    """Требует любую из перечисленных возможностей."""
+    user = get_current_user(request)
+    if not any(user_has(user, code) for code in capabilities):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён",
+        )
+    return user
 
 
 def require_role(request: Request, role: str) -> dict:

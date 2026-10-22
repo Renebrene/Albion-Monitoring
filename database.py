@@ -32,7 +32,13 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 _INSERT_RE = re.compile(r"^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+([A-Za-z_][\w\.]*)", re.IGNORECASE)
 # Таблицы без суррогатного id: адаптер не должен дописывать RETURNING id.
-_PG_TABLES_WITHOUT_ID = {"settings", "schema_migrations", "user_entities"}
+_PG_TABLES_WITHOUT_ID = {
+    "settings",
+    "schema_migrations",
+    "user_entities",
+    "capabilities",
+    "role_capabilities",
+}
 
 _pg_engine = None
 
@@ -514,6 +520,90 @@ def _migration_4_entity_scope(conn):
     """)
 
 
+def _migration_5_roles_and_capabilities(conn):
+    """Роли и возможности: конструктор ролей поверх системных."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS capabilities (
+            code TEXT PRIMARY KEY,
+            domain_code TEXT NOT NULL DEFAULT '',
+            description TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            workplace TEXT NOT NULL DEFAULT 'service',
+            scope TEXT NOT NULL DEFAULT 'entity',
+            is_system INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS role_capabilities (
+            role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+            capability_code TEXT NOT NULL REFERENCES capabilities(code),
+            PRIMARY KEY (role_id, capability_code)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_role_capabilities_code "
+        "ON role_capabilities(capability_code)"
+    )
+
+
+def _migration_6_custom_role_codes(conn):
+    """Снимает ограничение списка ролей в users.role.
+
+    Роли теперь задаёт конструктор, поэтому CHECK со списком восьми системных
+    ролей мешает. SQLite не умеет удалять ограничения — таблица пересобирается,
+    а внешние ключи проверяются в конце транзакции (defer_foreign_keys).
+    """
+    conn.execute("PRAGMA defer_foreign_keys = ON")
+    conn.execute("""
+        CREATE TABLE users_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            login TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            token_version INTEGER NOT NULL DEFAULT 1,
+            legal_entity_id INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Старые базы могли не иметь части колонок — переносим то, что есть.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    targets, selects = [], []
+    for column, default_sql in (
+        ("id", None),
+        ("login", None),
+        ("password_hash", None),
+        ("role", None),
+        ("active", "1"),
+        ("token_version", "1"),
+        ("legal_entity_id", "1"),
+        ("created_at", "CURRENT_TIMESTAMP"),
+    ):
+        targets.append(column)
+        if column in existing:
+            selects.append(column)
+        else:
+            selects.append(f"{default_sql} AS {column}" if default_sql else "NULL")
+
+    conn.execute(
+        f"INSERT INTO users_new ({', '.join(targets)}) "
+        f"SELECT {', '.join(selects)} FROM users"
+    )
+    conn.execute("DROP TABLE users")
+    conn.execute("ALTER TABLE users_new RENAME TO users")
+
+
+_migration_6_custom_role_codes.sqlite_rebuild = True
+
+
 def _apply_schema_migrations(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -527,6 +617,8 @@ def _apply_schema_migrations(conn):
         (2, "soft_hide_and_original_filenames", _migration_2_soft_hide_and_original_filenames),
         (3, "sessions_audit_active", _migration_3_sessions_audit_active),
         (4, "entity_scope", _migration_4_entity_scope),
+        (5, "roles_and_capabilities", _migration_5_roles_and_capabilities),
+        (6, "custom_role_codes", _migration_6_custom_role_codes),
     )
     for version, name, migration in migrations:
         applied = conn.execute(
@@ -534,6 +626,13 @@ def _apply_schema_migrations(conn):
         ).fetchone()
         if applied:
             continue
+
+        # Пересборка таблицы невозможна внутри транзакции: внешние ключи
+        # отключаются только вне неё (см. процедуру SQLite для ALTER TABLE).
+        rebuild = getattr(migration, "sqlite_rebuild", False)
+        if rebuild:
+            conn.execute("PRAGMA foreign_keys = OFF")
+
         conn.execute("BEGIN IMMEDIATE")
         try:
             migration(conn)
@@ -545,6 +644,14 @@ def _apply_schema_migrations(conn):
         except Exception:
             conn.rollback()
             raise
+        finally:
+            if rebuild:
+                conn.execute("PRAGMA foreign_keys = ON")
+                broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if broken:
+                    raise RuntimeError(
+                        f"Миграция {version} нарушила ссылочную целостность: {broken[:3]}"
+                    )
 
 
 def _init_sqlite_schema():
@@ -555,7 +662,7 @@ def _init_sqlite_schema():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 login TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','service','director','crew','head','staff','administrator','curator')),
+                role TEXT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1,
                 token_version INTEGER NOT NULL DEFAULT 1,
                 legal_entity_id INTEGER NOT NULL DEFAULT 1,
@@ -677,6 +784,31 @@ def _init_sqlite_schema():
                 legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
+            -- Справочник возможностей: синхронизируется из каталога в коде.
+            CREATE TABLE IF NOT EXISTS capabilities (
+                code TEXT PRIMARY KEY,
+                domain_code TEXT NOT NULL DEFAULT '',
+                description TEXT
+            );
+
+            -- Роли: системные (из кода) и пользовательские (конструктор).
+            CREATE TABLE IF NOT EXISTS roles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                workplace TEXT NOT NULL DEFAULT 'service',
+                scope TEXT NOT NULL DEFAULT 'entity',
+                is_system INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS role_capabilities (
+                role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                capability_code TEXT NOT NULL REFERENCES capabilities(code),
+                PRIMARY KEY (role_id, capability_code)
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 address_id INTEGER NOT NULL REFERENCES addresses(id),
@@ -778,6 +910,58 @@ def init_schema():
         _init_postgres_schema()
     else:
         _init_sqlite_schema()
+
+    sync_permissions()
+
+
+def sync_permissions():
+    """Приводит возможности и системные роли в соответствие с каталогом в коде.
+
+    Пользовательские роли не изменяются: только названия, рабочие места, области
+    данных и наборы возможностей системных ролей.
+    """
+    from permissions import CAPABILITIES, SYSTEM_ROLES
+
+    with get_db() as conn:
+        for code, (domain_code, description) in CAPABILITIES.items():
+            conn.execute(
+                """
+                INSERT INTO capabilities (code, domain_code, description)
+                VALUES (?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET domain_code = excluded.domain_code,
+                                               description = excluded.description
+                """,
+                (code, domain_code, description),
+            )
+
+        for code, config in SYSTEM_ROLES.items():
+            conn.execute(
+                """
+                INSERT INTO roles (code, name, workplace, scope, is_system, active)
+                VALUES (?, ?, ?, ?, 1, 1)
+                ON CONFLICT(code) DO UPDATE SET name = excluded.name,
+                                               workplace = excluded.workplace,
+                                               scope = excluded.scope,
+                                               is_system = 1,
+                                               active = 1
+                """,
+                (code, config["name"], config["workplace"], config["scope"]),
+            )
+            row = conn.execute(
+                "SELECT id FROM roles WHERE code = ?", (code,)
+            ).fetchone()
+            role_id = row["id"]
+            conn.execute(
+                "DELETE FROM role_capabilities WHERE role_id = ?", (role_id,)
+            )
+            for capability_code in config["capabilities"]:
+                conn.execute(
+                    """
+                    INSERT INTO role_capabilities (role_id, capability_code)
+                    VALUES (?, ?)
+                    """,
+                    (role_id, capability_code),
+                )
 
 
 def get_setting(key: str, default: str = "") -> str:

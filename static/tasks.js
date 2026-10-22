@@ -578,7 +578,7 @@ document.getElementById("statusFilter").addEventListener("click", e => {
 (async () => {
   const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
   if(!me){ location.href = "/"; return; }
-  currentRole = getBaseRole(me.role);
+  currentRole = me.workplace || getBaseRole(me.role);
   myLogin = me.login;
   document.getElementById("whoami").textContent = me.login + " (" + me.role_label + ")";
   

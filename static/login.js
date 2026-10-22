@@ -31,6 +31,9 @@ document.getElementById("form").addEventListener("submit", async (e) => {
     localStorage.setItem("role", d.role);
     localStorage.setItem("role_label", d.role_label);
     localStorage.setItem("login", d.login);
+    // Рабочее место и возможности приходят с сервера: роль может быть своей.
+    localStorage.setItem("workplace", d.workplace || window.getBaseRole(d.role));
+    localStorage.setItem("capabilities", JSON.stringify(d.capabilities || []));
     
     // Редирект на главную страницу роли
     location.href = d.home;

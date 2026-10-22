@@ -1931,7 +1931,7 @@ window.deleteTask = async (id) => {
   const me = await API("/api/me", {headers: authHeaders()}).catch(()=>null);
   if(!me){ location.href = "/"; return; }
   myLogin = me.login;
-  myRole = getBaseRole(me.role);
+  myRole = me.workplace || getBaseRole(me.role);
 
   document.getElementById("whoami").textContent = me.login;
 
