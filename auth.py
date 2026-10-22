@@ -68,8 +68,48 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный токен")
 
 
+def available_entities(
+    conn,
+    user_id: int,
+    default_entity_id: int = None,
+    include_all: bool = False,
+) -> list:
+    """Юрлица, доступные пользователю.
+
+    Обычные роли — членство (`user_entities`) плюс собственное юрлицо;
+    групповой администратор дополнительно видит все активные юрлица группы.
+    """
+    base_query = """
+        SELECT e.id, e.name, e.short_name
+        FROM legal_entities e
+        WHERE e.active = 1
+    """
+    if include_all:
+        rows = conn.execute(base_query + " ORDER BY e.id").fetchall()
+    else:
+        rows = conn.execute(
+            base_query
+            + """
+              AND (
+                    e.id = ?
+                    OR EXISTS (
+                        SELECT 1 FROM user_entities ue
+                        WHERE ue.user_id = ? AND ue.legal_entity_id = e.id
+                    )
+              )
+            ORDER BY e.id
+            """,
+            (int(default_entity_id or 1), user_id),
+        ).fetchall()
+
+    return [
+        {"id": row["id"], "name": row["name"], "short_name": row["short_name"]}
+        for row in rows
+    ]
+
+
 def get_current_user(request: Request) -> dict:
-    """Проверяет JWT и серверную сессию, возвращает актуальную роль из БД."""
+    """Проверяет JWT и серверную сессию, возвращает актуальную роль и область видимости."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Нет токена")
@@ -89,6 +129,8 @@ def get_current_user(request: Request) -> dict:
             """
             SELECT
                 s.id, s.user_id, s.token_hash,
+                s.legal_entity_id AS session_entity_id,
+                s.all_entities,
                 u.login AS user_login,
                 u.role AS user_role,
                 u.active,
@@ -103,6 +145,15 @@ def get_current_user(request: Request) -> dict:
             """,
             (session_id,),
         ).fetchone()
+
+        allowed = []
+        if row:
+            allowed = available_entities(
+                conn,
+                row["user_id"],
+                row["legal_entity_id"],
+                include_all=get_base_role(row["user_role"]) == "admin",
+            )
 
     if not row:
         raise HTTPException(
@@ -128,20 +179,47 @@ def get_current_user(request: Request) -> dict:
             detail="Неверный токен",
         )
 
-    legal_entity_id = row["legal_entity_id"] or 1
-    set_tenant_context(
-        legal_entity_id,
-        get_base_role(row["user_role"]) == "admin",
-    )
+    is_group_admin = get_base_role(row["user_role"]) == "admin"
+    allowed_ids = [entity["id"] for entity in allowed]
+    default_entity_id = row["legal_entity_id"] or (allowed_ids[0] if allowed_ids else 1)
+
+    # Режим «Все юрлица» доступен только групповому администратору.
+    all_entities = bool(row["all_entities"]) and is_group_admin
+
+    active_entity_id = None
+    if all_entities:
+        scope_entity_ids = allowed_ids or [default_entity_id]
+    else:
+        active_entity_id = row["session_entity_id"]
+        if active_entity_id not in allowed_ids:
+            # Членство могло измениться: возвращаемся к юрлицу по умолчанию.
+            active_entity_id = default_entity_id
+        scope_entity_ids = [active_entity_id]
+
+    set_tenant_context(scope_entity_ids, is_group_admin=all_entities)
 
     return {
         "sub": row["user_id"],
         "login": row["user_login"],
         "role": row["user_role"],
         "session_id": row["id"],
-        "legal_entity_id": legal_entity_id,
+        "legal_entity_id": active_entity_id,
+        "scope_entity_ids": scope_entity_ids,
+        "all_entities": all_entities,
+        "is_group_admin": is_group_admin,
         "token_version": int(row["token_version"] or 1),
     }
+
+
+def require_entity_scope(user: dict) -> int:
+    """Юрлицо для новой записи. В режиме «Все юрлица» создание запрещено."""
+    entity_id = user.get("legal_entity_id")
+    if user.get("all_entities") or not entity_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Выберите конкретное юрлицо: в режиме «Все юрлица» создание недоступно",
+        )
+    return int(entity_id)
 
 
 # Базовый функциональный профиль новых ролей.

@@ -140,6 +140,35 @@ curl -fsS https://albion.example.com/healthz
 - Диагностика RLS: запустить app с `ALBION_DEBUG_TENANT=1` — при каждом
   открытии соединения печатается контекст юрлица.
 
+### Второе юрлицо группы
+
+Юрлица и членство пока заводятся SQL-скриптом (UI администратора — отдельный
+этап). Пример для PostgreSQL:
+
+```sql
+-- 1. Новое юрлицо
+INSERT INTO core.legal_entities (name, short_name, inn)
+VALUES ('ООО Второе', 'Второе', '6160000000');
+
+-- 2. Членство: кто имеет доступ и с какой ролью в этом юрлице
+INSERT INTO core.user_entities (user_id, legal_entity_id, role, is_default)
+SELECT id, 2, role, false FROM core.users WHERE login = 'сервис1';
+
+-- 3. При необходимости — «домашнее» юрлицо и адреса
+UPDATE core.users SET legal_entity_id = 2 WHERE login = 'сервис1';
+UPDATE monitoring.addresses SET shared = 0 WHERE id = /* личный адрес */;
+
+-- 4. Сбросить активный выбор сессий, чтобы новые правила применились сразу
+UPDATE core.sessions SET legal_entity_id = NULL, all_entities = 0;
+```
+
+После этого пользователь при следующем входе получит выбор юрлица в шапке,
+если ему доступно больше одного. Адрес с `shared = 1` виден всем юрлицам
+группы; перенесённые из SQLite адреса помечаются общими автоматически.
+
+В режиме SQLite изоляция чтения между юрлицами не применяется (RLS есть только
+в PostgreSQL) — многотенантная эксплуатация предполагает `DB_BACKEND=postgres`.
+
 ## 5. HTTPS
 
 ### Вариант A — Caddy (рекомендуется, автоматический TLS)

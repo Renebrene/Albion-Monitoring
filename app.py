@@ -31,7 +31,8 @@ from database import (
 )
 from auth import (
     hash_password, verify_password, create_token, token_fingerprint,
-    get_current_user, require_role, require_any, get_base_role,
+    get_current_user, require_role, require_any, require_entity_scope,
+    available_entities, get_base_role,
     ROLE_LABELS, ROLE_HOME, TOKEN_HOURS,
 )
 
@@ -39,6 +40,30 @@ init_schema()
 
 
 audit_logger = logging.getLogger("albion.audit")
+
+
+def parent_entity_id(conn, table: str, row_id):
+    """Юрлицо родительской записи (задача, отчёт, мониторинг) или None."""
+    if row_id is None:
+        return None
+    row = conn.execute(
+        f"SELECT legal_entity_id FROM {table} WHERE id = ?", (row_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return int(row["legal_entity_id"] or 1)
+
+
+def scope_entity_for_reply(conn, table: str, row_id, user: dict) -> int:
+    """Юрлицо для записи, привязанной к существующему объекту.
+
+    Комментарий, вложение или переход статуса наследуют юрлицо задачи/отчёта,
+    поэтому они доступны и в режиме «Все юрлица».
+    """
+    entity_id = parent_entity_id(conn, table, row_id)
+    if entity_id is not None:
+        return entity_id
+    return require_entity_scope(user)
 
 
 def client_ip(request: Request = None):
@@ -637,9 +662,7 @@ def login(data: LoginIn, request: Request):
         # Контекст запроса — юрлицо входящего: от него зависят RLS-проверки
         # при записи сессии и аудита.
         if row:
-            set_tenant_context(
-                row["legal_entity_id"], get_base_role(row["role"]) == "admin"
-            )
+            set_tenant_context([row["legal_entity_id"] or 1])
             apply_tenant_settings(conn)
 
         if not row or not verify_password(data.password, row["password_hash"]):
@@ -666,10 +689,10 @@ def login(data: LoginIn, request: Request):
         ).strftime("%Y-%m-%d %H:%M:%S")
         cur = conn.execute(
             """
-            INSERT INTO auth_sessions (user_id, login, role, expires_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO auth_sessions (user_id, login, role, expires_at, legal_entity_id)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (row["id"], row["login"], row["role"], expires_at),
+            (row["id"], row["login"], row["role"], expires_at, row["legal_entity_id"] or 1),
         )
         session_id = cur.lastrowid
 
@@ -736,6 +759,89 @@ def me(request: Request):
         "login": user["login"],
         "role": user["role"],
         "role_label": ROLE_LABELS.get(user["role"], user["role"]),
+        "legal_entity_id": user["legal_entity_id"],
+        "all_entities": user["all_entities"],
+        "can_view_all": can_view_all_entities(user),
+    }
+
+
+class EntityScopeIn(BaseModel):
+    legal_entity_id: Optional[int] = None  # None — режим «Все юрлица»
+
+
+def user_entity_options(user: dict) -> list:
+    with get_db() as conn:
+        return available_entities(
+            conn,
+            user["sub"],
+            user["legal_entity_id"] or (user.get("scope_entity_ids") or [1])[0],
+            include_all=bool(user.get("is_group_admin")),
+        )
+
+
+def can_view_all_entities(user: dict) -> bool:
+    """Сводный режим доступен только групповому администратору и при 2+ юрлицах."""
+    if not user.get("is_group_admin"):
+        return False
+    # Режим определяется доступными юрлицами, а не текущей областью видимости.
+    return len(user_entity_options(user)) > 1
+
+
+@app.get("/api/legal-entities")
+def list_legal_entities(request: Request):
+    """Доступные юрлица и текущий выбор — для переключателя в интерфейсе."""
+    user = get_current_user(request)
+    return {
+        "current": {
+            "legal_entity_id": user["legal_entity_id"],
+            "all_entities": user["all_entities"],
+        },
+        "can_view_all": can_view_all_entities(user),
+        "options": user_entity_options(user),
+    }
+
+
+@app.post("/api/session/legal-entity")
+def switch_legal_entity(data: EntityScopeIn, request: Request):
+    """Переключает активное юрлицо серверной сессии."""
+    user = get_current_user(request)
+
+    if data.legal_entity_id is None:
+        if not can_view_all_entities(user):
+            raise HTTPException(
+                status_code=403, detail="Режим «Все юрлица» недоступен"
+            )
+        entity_id, all_entities = None, 1
+    else:
+        allowed_ids = {entity["id"] for entity in user_entity_options(user)}
+        entity_id = int(data.legal_entity_id)
+        if entity_id not in allowed_ids:
+            raise HTTPException(status_code=403, detail="Нет доступа к этому юрлицу")
+        all_entities = 0
+
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE auth_sessions
+            SET legal_entity_id = ?, all_entities = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (entity_id, all_entities, user["session_id"], user["sub"]),
+        )
+        write_audit(
+            conn,
+            user,
+            "auth.entity.switch",
+            "session",
+            user["session_id"],
+            after={"legal_entity_id": entity_id, "all_entities": bool(all_entities)},
+            request=request,
+        )
+
+    return {
+        "ok": True,
+        "legal_entity_id": entity_id,
+        "all_entities": bool(all_entities),
     }
 
 
@@ -975,9 +1081,20 @@ def create_report(data: ReportIn, request: Request):
             if task["status"] != "open":
                 raise HTTPException(status_code=400, detail="Задание уже закрыто")
 
+        # Отчёт по заданию наследует юрлицо задания, свободный мониторинг —
+        # юрлицо сессии (в режиме «Все юрлица» создание запрещено).
+        entity_id = (
+            scope_entity_for_reply(conn, "tasks", data.task_id, user)
+            if data.task_id
+            else require_entity_scope(user)
+        )
+
         cursor = conn.execute(
-            "INSERT INTO reports (address_id, user_id, task_id, text) VALUES (?, ?, ?, ?)",
-            (data.address_id, user["sub"], data.task_id, data.text.strip()),
+            """
+            INSERT INTO reports (address_id, user_id, task_id, text, legal_entity_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (data.address_id, user["sub"], data.task_id, data.text.strip(), entity_id),
         )
         report_id = cursor.lastrowid
 
@@ -1012,10 +1129,10 @@ def create_report(data: ReportIn, request: Request):
                 conn.execute(
                     """
                     INSERT INTO media
-                        (report_id, filename, media_type, original_filename)
-                    VALUES (?, ?, ?, ?)
+                        (report_id, filename, media_type, original_filename, legal_entity_id)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (report_id, new_name, media_type, original_filename),
+                    (report_id, new_name, media_type, original_filename, entity_id),
                 )
 
         if data.task_id:
@@ -1060,13 +1177,15 @@ def create_crew_report(data: CrewReportIn, request: Request):
         if not addr:
             raise HTTPException(status_code=400, detail="Адрес не найден")
 
+        entity_id = require_entity_scope(user)
+
         cursor = conn.execute(
             """
             INSERT INTO crew_monitorings
-                (address_id, user_id, text)
-            VALUES (?, ?, ?)
+                (address_id, user_id, text, legal_entity_id)
+            VALUES (?, ?, ?, ?)
             """,
-            (data.address_id, user["sub"], text),
+            (data.address_id, user["sub"], text, entity_id),
         )
 
         report_id = cursor.lastrowid
@@ -1103,10 +1222,11 @@ def create_crew_report(data: CrewReportIn, request: Request):
             conn.execute(
                 """
                 INSERT INTO crew_monitoring_media
-                    (crew_monitoring_id, filename, media_type, original_filename)
-                VALUES (?, ?, ?, ?)
+                    (crew_monitoring_id, filename, media_type,
+                     original_filename, legal_entity_id)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (report_id, new_name, media_type, original_filename),
+                (report_id, new_name, media_type, original_filename, entity_id),
             )
 
     return {
@@ -1383,13 +1503,15 @@ def create_head_report_comment(
         if not report:
             raise HTTPException(status_code=404, detail="Отчёт не найден")
 
+        entity_id = scope_entity_for_reply(conn, "crew_monitorings", report_id, user)
+
         cursor = conn.execute(
             """
             INSERT INTO crew_report_comments
-                (crew_monitoring_id, user_id, text)
-            VALUES (?, ?, ?)
+                (crew_monitoring_id, user_id, text, legal_entity_id)
+            VALUES (?, ?, ?, ?)
             """,
-            (report_id, user["sub"], text),
+            (report_id, user["sub"], text, entity_id),
         )
 
         comment_id = cursor.lastrowid
@@ -1425,10 +1547,10 @@ def create_head_report_comment(
             conn.execute(
                 """
                 INSERT INTO crew_report_comment_media
-                    (comment_id, filename, media_type, original_filename)
-                VALUES (?, ?, ?, ?)
+                    (comment_id, filename, media_type, original_filename, legal_entity_id)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (comment_id, new_name, media_type, original_filename),
+                (comment_id, new_name, media_type, original_filename, entity_id),
             )
 
     return {
@@ -1533,11 +1655,13 @@ def create_task(data: TaskIn, request: Request):
         if not data.description.strip():
             raise HTTPException(status_code=400, detail="Пустое описание")
 
+        entity_id = require_entity_scope(user)
+
         cursor = conn.execute(
             """INSERT INTO tasks
                (address_id, created_by, created_by_role,
-                description, is_important, workflow_status)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+                description, is_important, workflow_status, legal_entity_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.address_id,
                 user["sub"],
@@ -1545,6 +1669,7 @@ def create_task(data: TaskIn, request: Request):
                 data.description.strip(),
                 1 if data.is_important else 0,
                 "open",
+                entity_id,
             ),
         )
 
@@ -1554,13 +1679,14 @@ def create_task(data: TaskIn, request: Request):
         conn.execute(
             """
             INSERT INTO task_status_history
-                (task_id, status, changed_by, changed_at, comment)
-            VALUES (?, 'open', ?, CURRENT_TIMESTAMP, ?)
+                (task_id, status, changed_by, changed_at, comment, legal_entity_id)
+            VALUES (?, 'open', ?, CURRENT_TIMESTAMP, ?, ?)
             """,
             (
                 task_id,
                 user["sub"],
                 "Создание задания",
+                entity_id,
             ),
         )
         write_audit(
@@ -1639,6 +1765,7 @@ async def add_task_media(
             )
 
         result = []
+        entity_id = scope_entity_for_reply(conn, "tasks", task_id, user)
 
         for media_item in filenames:
             if isinstance(media_item, str):
@@ -1701,10 +1828,10 @@ async def add_task_media(
             conn.execute(
                 """
                 INSERT INTO media
-                    (task_id, filename, media_type, original_filename)
-                VALUES (?, ?, ?, ?)
+                    (task_id, filename, media_type, original_filename, legal_entity_id)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (task_id, final_name, media_type, original_filename)
+                (task_id, final_name, media_type, original_filename, entity_id)
             )
 
             result.append({
@@ -1911,14 +2038,17 @@ def add_task_status_history(
     conn.execute(
         """
         INSERT INTO task_status_history
-            (task_id, status, changed_by, changed_at, comment)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+            (task_id, status, changed_by, changed_at, comment, legal_entity_id)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
         """,
         (
             task_id,
             status,
             user_id,
             comment,
+            # Переход статуса принадлежит юрлицу задания, а не сессии:
+            # проверять и закрывать задания можно и в режиме «Все юрлица».
+            parent_entity_id(conn, "tasks", task_id) or 1,
         ),
     )
 
@@ -2410,9 +2540,30 @@ class PasswordIn(BaseModel):
 @app.get("/api/users")
 def list_users_api(request: Request):
     require_any(request, ["admin"])
+    # Сначала определяем область видимости, потом открываем соединение:
+    # контекст юрлица применяется при выдаче соединения.
+    user = require_any(request, ["admin"])
+    placeholders = ",".join(["?"] * len(user["scope_entity_ids"]))
     with get_db() as conn:
-        rows = conn.execute("SELECT id, login, role FROM users ORDER BY login").fetchall()
+        rows = conn.execute(
+            f"SELECT id, login, role FROM users WHERE legal_entity_id IN ({placeholders}) "
+            "ORDER BY login",
+            tuple(user["scope_entity_ids"]),
+        ).fetchall()
     return [{"id": r["id"], "login": r["login"], "role": r["role"]} for r in rows]
+
+
+def user_in_scope(conn, user: dict, target_user_id: int) -> bool:
+    """Доступен ли администратору этот пользователь."""
+    if user.get("all_entities"):
+        return True
+    row = conn.execute(
+        "SELECT legal_entity_id FROM users WHERE id = ?", (target_user_id,)
+    ).fetchone()
+    if not row:
+        return False
+    return int(row["legal_entity_id"] or 1) in set(user["scope_entity_ids"])
+
 
 @app.post("/api/users")
 def create_user_api(data: UserIn, request: Request):
@@ -2428,18 +2579,32 @@ def create_user_api(data: UserIn, request: Request):
         "curator",
     ):
         raise HTTPException(status_code=400, detail="Неверная роль")
+    entity_id = require_entity_scope(user)
     with get_db() as conn:
         exists = conn.execute("SELECT 1 FROM users WHERE login = ?", (data.login,)).fetchone()
         if exists:
             raise HTTPException(status_code=400, detail="Логин уже занят")
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO users (login, password_hash, role, legal_entity_id) VALUES (?, ?, ?, ?)",
             (
                 data.login,
                 hash_password(data.password),
                 data.role,
-                user.get("legal_entity_id"),
+                entity_id,
             )
+        )
+        # Членство нового пользователя: его юрлицо по умолчанию.
+        # INSERT ... SELECT ... WHERE NOT EXISTS работает и в SQLite, и в PostgreSQL.
+        conn.execute(
+            """
+            INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+            SELECT ?, ?, ?, 1
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_entities
+                WHERE user_id = ? AND legal_entity_id = ?
+            )
+            """,
+            (cursor.lastrowid, entity_id, data.role, cursor.lastrowid, entity_id),
         )
         write_audit(
             conn,
@@ -2447,15 +2612,18 @@ def create_user_api(data: UserIn, request: Request):
             "user.create",
             "user",
             data.login,
-            after={"login": data.login, "role": data.role},
+            after={"login": data.login, "role": data.role, "legal_entity_id": entity_id},
             request=request,
         )
     return {"ok": True}
+
 
 @app.put("/api/users/{user_id}/password")
 def change_password_api(user_id: int, data: PasswordIn, request: Request):
     user = require_any(request, ["admin"])
     with get_db() as conn:
+        if not user_in_scope(conn, user, user_id):
+            raise HTTPException(status_code=403, detail="Пользователь вне вашего юрлица")
         conn.execute(
             """
             UPDATE users
@@ -2578,13 +2746,14 @@ def add_comment(data: CommentIn, request: Request):
             )
 
         conn.execute("""
-            INSERT INTO comments (task_id, user_id, text, media_json)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO comments (task_id, user_id, text, media_json, legal_entity_id)
+            VALUES (?, ?, ?, ?, ?)
         """, (
             data.task_id,
             user["sub"],
             data.text.strip(),
-            json.dumps(data.media)
+            json.dumps(data.media),
+            scope_entity_for_reply(conn, "tasks", data.task_id, user),
         ))
         
         # Автозакрытие убрано — закрывает только Админ
@@ -2776,19 +2945,22 @@ def send_monitoring(data: ReportIn, request: Request):
                 detail="Пустой текст"
             )
 
+        entity_id = require_entity_scope(user)
+
         # Комментарий директора хранится отдельно
         if get_base_role(user["role"]) == "director":
             cursor = conn.execute(
                 """
                 INSERT INTO director_comments
-                    (item_type, item_id, user_id, text)
+                    (item_type, item_id, user_id, text, legal_entity_id)
                 VALUES
-                    ('monitoring', ?, ?, ?)
+                    ('monitoring', ?, ?, ?, ?)
                 """,
                 (
                     data.address_id,
                     user["sub"],
-                    data.text.strip()
+                    data.text.strip(),
+                    entity_id,
                 )
             )
 
@@ -2804,14 +2976,15 @@ def send_monitoring(data: ReportIn, request: Request):
         cursor = conn.execute(
             """
             INSERT INTO reports
-                (address_id, user_id, task_id, text)
+                (address_id, user_id, task_id, text, legal_entity_id)
             VALUES
-                (?, ?, NULL, ?)
+                (?, ?, NULL, ?, ?)
             """,
             (
                 data.address_id,
                 user["sub"],
-                data.text.strip()
+                data.text.strip(),
+                entity_id,
             )
         )
 
@@ -2850,14 +3023,15 @@ def send_monitoring(data: ReportIn, request: Request):
                 conn.execute(
                     """
                     INSERT INTO media
-                        (report_id, filename, media_type)
+                        (report_id, filename, media_type, legal_entity_id)
                     VALUES
-                        (?, ?, ?)
+                        (?, ?, ?, ?)
                     """,
                     (
                         report_id,
                         new_name,
-                        media_type
+                        media_type,
+                        entity_id
                     )
                 )
 
@@ -3000,15 +3174,16 @@ def add_director_comment(data: DirectorCommentIn, request: Request):
             conn.execute(
                 """
                 INSERT INTO director_comments
-                    (item_type, item_id, user_id, text, media_json)
-                VALUES (?, ?, ?, ?, ?)
+                    (item_type, item_id, user_id, text, media_json, legal_entity_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data.item_type,
                     data.item_id,
                     user["sub"],
                     data.text.strip(),
-                    json.dumps(data.media, ensure_ascii=False)
+                    json.dumps(data.media, ensure_ascii=False),
+                    scope_entity_for_reply(conn, "tasks", data.item_id, user),
                 )
             )
 
@@ -3035,8 +3210,9 @@ def add_director_comment(data: DirectorCommentIn, request: Request):
             conn.execute(
                 """
                 INSERT INTO director_comments
-                    (item_type, item_id, report_id, user_id, text, media_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (item_type, item_id, report_id, user_id, text, media_json,
+                     legal_entity_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data.item_type,
@@ -3044,7 +3220,8 @@ def add_director_comment(data: DirectorCommentIn, request: Request):
                     data.item_id,
                     user["sub"],
                     data.text.strip(),
-                    json.dumps(data.media, ensure_ascii=False)
+                    json.dumps(data.media, ensure_ascii=False),
+                    scope_entity_for_reply(conn, "reports", data.item_id, user),
                 )
             )
 

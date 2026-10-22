@@ -97,7 +97,34 @@ for login, role in (("service", "service"), ("crew", "crew"), ("head", "head"), 
     tokens[role] = {"Authorization": "Bearer " + r.json()["token"]}
 
 assert client.get("/api/auth-sessions", headers=admin).status_code == 200
+# Админ группы начинает работу в своём юрлице и видит только его пользователей.
+assert len(client.get("/api/users", headers=admin).json()) == 5
+assert client.get("/api/me", headers=admin).json()["legal_entity_id"] == 1
+
+scope = client.get("/api/legal-entities", headers=admin).json()
+assert scope["can_view_all"] is True, scope
+assert {option["id"] for option in scope["options"]} == {1, 2}, scope
+assert scope["current"] == {"legal_entity_id": 1, "all_entities": False}, scope
+
+# Переключение в режим «Все юрлица»: видны пользователи обеих организаций.
+assert client.post(
+    "/api/session/legal-entity", json={"legal_entity_id": None}, headers=admin
+).status_code == 200
 assert len(client.get("/api/users", headers=admin).json()) == 6
+assert client.get("/api/me", headers=admin).json()["all_entities"] is True
+
+# В сводном режиме создавать нельзя — сначала нужно выбрать юрлицо.
+blocked = client.post(
+    "/api/tasks", json={"address_id": 1, "description": "Без юрлица"}, headers=admin
+)
+assert blocked.status_code == 400, blocked.text
+
+# Возврат в конкретное юрлицо.
+assert client.post(
+    "/api/session/legal-entity", json={"legal_entity_id": 1}, headers=admin
+).status_code == 200
+assert client.get("/api/me", headers=admin).json()["all_entities"] is False
+assert len(client.get("/api/users", headers=admin).json()) == 5
 
 # Юрлицо берётся из сессии и уходит в RLS: вторая организация видит только своё
 # и общие адреса, а личные адреса первой организации ей недоступны.
@@ -117,9 +144,20 @@ entity1_addresses = {
 assert 100 in entity1_addresses and 101 in entity1_addresses, entity1_addresses
 assert 99 not in entity1_addresses, entity1_addresses
 
-# Администратор группы видит все юрлица.
+# Администратор группы в конкретном юрлице видит только его данные,
+# а в сводном режиме — данные всех юрлиц группы.
 admin_addresses = {row["id"] for row in client.get("/api/addresses", headers=admin).json()}
-assert 99 in admin_addresses and 101 in admin_addresses, admin_addresses
+assert 101 in admin_addresses and 99 not in admin_addresses, admin_addresses
+
+assert client.post(
+    "/api/session/legal-entity", json={"legal_entity_id": None}, headers=admin
+).status_code == 200
+all_addresses = {row["id"] for row in client.get("/api/addresses", headers=admin).json()}
+assert {1, 99, 100, 101}.issubset(all_addresses), all_addresses
+
+assert client.post(
+    "/api/session/legal-entity", json={"legal_entity_id": 1}, headers=admin
+).status_code == 200
 
 feed = client.get("/api/feed?limit=100&offset=0", headers=admin).json()
 assert feed["limit"] == 100 and "items" in feed, feed

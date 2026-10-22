@@ -35,15 +35,34 @@ _PG_TABLES_WITHOUT_ID = {"settings", "schema_migrations"}
 
 _pg_engine = None
 
-# Tenant context of the current request. Set by auth.get_current_user() before
-# the handler opens a connection; read on every PostgreSQL checkout.
-_tenant_entity_id = contextvars.ContextVar("tenant_entity_id", default=1)
+# Tenant context of the current request: список доступных юрлиц и признак
+# группового администратора. Ставится в auth.get_current_user() и читается
+# при каждом открытии соединения с PostgreSQL.
+_tenant_entity_ids = contextvars.ContextVar("tenant_entity_ids", default=(1,))
 _tenant_is_group_admin = contextvars.ContextVar("tenant_is_group_admin", default=False)
 
 
-def set_tenant_context(legal_entity_id, is_group_admin: bool = False) -> None:
-    _tenant_entity_id.set(int(legal_entity_id or 1))
+def normalize_entity_ids(legal_entity_ids) -> tuple:
+    """Приводит юрлица к упорядоченному кортежу целых id."""
+    if legal_entity_ids is None:
+        values = []
+    elif isinstance(legal_entity_ids, (list, tuple, set, frozenset)):
+        values = list(legal_entity_ids)
+    else:
+        values = [legal_entity_ids]
+    return tuple(sorted({int(value) for value in values if value}))
+
+
+def set_tenant_context(legal_entity_ids, is_group_admin: bool = False) -> None:
+    """Задаёт область видимости запроса: одно юрлицо, несколько или все."""
+    ids = normalize_entity_ids(legal_entity_ids)
+    _tenant_entity_ids.set(ids or (1,))
     _tenant_is_group_admin.set(bool(is_group_admin))
+
+
+def tenant_entity_ids() -> tuple:
+    """Юрлица текущего контекста запроса."""
+    return _tenant_entity_ids.get()
 
 
 def apply_tenant_settings(conn) -> None:
@@ -54,16 +73,16 @@ def apply_tenant_settings(conn) -> None:
     """
     if DB_BACKEND != "postgres":
         return
-    entity_id = int(_tenant_entity_id.get() or 1)
+    entity_ids = ",".join(str(value) for value in tenant_entity_ids())
     is_group_admin = "on" if _tenant_is_group_admin.get() else "off"
-    conn.execute(f"SET app.legal_entity_ids = '{entity_id}'")
+    conn.execute(f"SET app.legal_entity_ids = '{entity_ids}'")
     conn.execute(f"SET app.is_group_admin = '{is_group_admin}'")
 
 
 def get_tenant_context() -> dict:
     """Текущий контекст юрлица (для новых записей и диагностики)."""
     return {
-        "legal_entity_id": _tenant_entity_id.get(),
+        "legal_entity_ids": list(tenant_entity_ids()),
         "is_group_admin": _tenant_is_group_admin.get(),
     }
 
@@ -232,13 +251,16 @@ def _postgres_db():
     connection = engine.connect()
 
     # Enforce RLS: the owner bypasses policies, albion_app does not.
-    entity_id = int(_tenant_entity_id.get() or 1)
+    entity_ids = ",".join(str(value) for value in tenant_entity_ids())
     is_group_admin = "on" if _tenant_is_group_admin.get() else "off"
     if os.environ.get("ALBION_DEBUG_TENANT"):
-        print(f"TENANT checkout entity={entity_id} group_admin={is_group_admin}", flush=True)
+        print(
+            f"TENANT checkout entities={entity_ids} group_admin={is_group_admin}",
+            flush=True,
+        )
     connection.exec_driver_sql("RESET ROLE")
     connection.exec_driver_sql("SET ROLE albion_app")
-    connection.exec_driver_sql(f"SET app.legal_entity_ids = '{entity_id}'")
+    connection.exec_driver_sql(f"SET app.legal_entity_ids = '{entity_ids}'")
     connection.exec_driver_sql(f"SET app.is_group_admin = '{is_group_admin}'")
 
     wrapper = _PgConnection(connection)
@@ -437,6 +459,60 @@ def _migration_3_sessions_audit_active(conn):
     )
 
 
+def _migration_4_entity_scope(conn):
+    """Юрлицо у рабочих таблиц, членство пользователей и режим сессии."""
+    for table in (
+        "addresses",
+        "tasks",
+        "task_status_history",
+        "comments",
+        "director_comments",
+        "reports",
+        "media",
+        "crew_monitorings",
+        "crew_monitoring_media",
+        "crew_report_comments",
+        "crew_report_comment_media",
+    ):
+        _add_column_if_missing(conn, table, "legal_entity_id", "INTEGER NOT NULL DEFAULT 1")
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_legal_entity "
+            f"ON {table}(legal_entity_id)"
+        )
+
+    # Исторические адреса были видны всем — помечаем их общими, как при
+    # переносе в PostgreSQL. Новые адреса по умолчанию личные (shared = 0).
+    if _add_column_if_missing(conn, "addresses", "shared", "INTEGER NOT NULL DEFAULT 0"):
+        conn.execute("UPDATE addresses SET shared = 1")
+
+    _add_column_if_missing(conn, "auth_sessions", "legal_entity_id", "INTEGER")
+    _add_column_if_missing(conn, "auth_sessions", "all_entities", "INTEGER NOT NULL DEFAULT 0")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_entities (
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            legal_entity_id INTEGER NOT NULL REFERENCES legal_entities(id),
+            role TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, legal_entity_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_entities_user ON user_entities(user_id)"
+    )
+    conn.execute("""
+        INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+        SELECT users.id, users.legal_entity_id, users.role, 1
+        FROM users
+        WHERE users.legal_entity_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM user_entities
+              WHERE user_entities.user_id = users.id
+                AND user_entities.legal_entity_id = users.legal_entity_id
+          )
+    """)
+
+
 def _apply_schema_migrations(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -449,6 +525,7 @@ def _apply_schema_migrations(conn):
         (1, "workflow_and_comments", _migration_1_workflow_and_comments),
         (2, "soft_hide_and_original_filenames", _migration_2_soft_hide_and_original_filenames),
         (3, "sessions_audit_active", _migration_3_sessions_audit_active),
+        (4, "entity_scope", _migration_4_entity_scope),
     )
     for version, name, migration in migrations:
         applied = conn.execute(
@@ -503,7 +580,18 @@ def _init_sqlite_schema():
                 revoked_at DATETIME,
                 expires_at DATETIME,
                 token_hash TEXT,
+                legal_entity_id INTEGER,
+                all_entities INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
+            -- Доступ пользователей к юрлицам группы.
+            CREATE TABLE IF NOT EXISTS user_entities (
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                legal_entity_id INTEGER NOT NULL REFERENCES legal_entities(id),
+                role TEXT NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, legal_entity_id)
             );
 
             CREATE TABLE IF NOT EXISTS addresses (
@@ -515,7 +603,9 @@ def _init_sqlite_schema():
                 filter2 TEXT,
                 filter3 TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1,
+                shared INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS reports (
@@ -525,7 +615,8 @@ def _init_sqlite_schema():
                 task_id INTEGER REFERENCES tasks(id),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 text TEXT NOT NULL,
-                hidden INTEGER NOT NULL DEFAULT 0
+                hidden INTEGER NOT NULL DEFAULT 0,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             -- Фото и видео (media_type: 'photo' или 'video')
@@ -535,7 +626,8 @@ def _init_sqlite_schema():
                 task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
                 filename TEXT NOT NULL,
                 media_type TEXT NOT NULL CHECK(media_type IN ('photo','video')),
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             -- Отдельные мониторинги Экипажа.
@@ -546,7 +638,8 @@ def _init_sqlite_schema():
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 text TEXT NOT NULL,
-                hidden INTEGER NOT NULL DEFAULT 0
+                hidden INTEGER NOT NULL DEFAULT 0,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             -- Фото и видео мониторингов Экипажа.
@@ -556,7 +649,8 @@ def _init_sqlite_schema():
                     REFERENCES crew_monitorings(id) ON DELETE CASCADE,
                 filename TEXT NOT NULL,
                 media_type TEXT NOT NULL CHECK(media_type IN ('photo','video')),
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             -- Комментарии Руководителя к отчётам Экипажа.
@@ -567,7 +661,8 @@ def _init_sqlite_schema():
                 user_id INTEGER NOT NULL
                     REFERENCES users(id),
                 text TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             -- Фото и видео в комментариях Руководителя.
@@ -577,7 +672,8 @@ def _init_sqlite_schema():
                     REFERENCES crew_report_comments(id) ON DELETE CASCADE,
                 filename TEXT NOT NULL,
                 media_type TEXT NOT NULL CHECK(media_type IN ('photo','video')),
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS tasks (
@@ -589,7 +685,8 @@ def _init_sqlite_schema():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 closed_at DATETIME,
                 closed_by INTEGER REFERENCES users(id),
-                hidden INTEGER NOT NULL DEFAULT 0
+                hidden INTEGER NOT NULL DEFAULT 0,
+                legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
             -- Настройки приложения (вкл/выкл фото, видео)

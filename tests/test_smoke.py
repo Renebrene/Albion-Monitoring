@@ -231,7 +231,16 @@ class ApplicationSmokeTests(unittest.TestCase):
             "Головная организация",
         )
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        self.assertEqual(versions, [1, 2, 3])
+        self.assertEqual(versions, [1, 2, 3, 4])
+        # v4: юрлицо у рабочих таблиц, общий признак адреса и членство.
+        task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        self.assertIn("legal_entity_id", task_columns)
+        address_columns = {row[1] for row in conn.execute("PRAGMA table_info(addresses)")}
+        self.assertIn("shared", address_columns)
+        membership = conn.execute(
+            "SELECT user_id, legal_entity_id, is_default FROM user_entities WHERE user_id = 1"
+        ).fetchone()
+        self.assertEqual(membership, (1, 1, 1))
         conn.close()
 
     def test_task_workflow_transitions_and_history(self):
@@ -286,6 +295,7 @@ class ApplicationSmokeTests(unittest.TestCase):
                     (1, "workflow_and_comments"),
                     (2, "soft_hide_and_original_filenames"),
                     (3, "sessions_audit_active"),
+                    (4, "entity_scope"),
                 ],
             )
             existing_task = conn.execute("SELECT workflow_status, created_by_role, is_important FROM tasks WHERE id=1").fetchone()
@@ -295,7 +305,7 @@ class ApplicationSmokeTests(unittest.TestCase):
         from database import init_schema
         init_schema()
         with get_db() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 3)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 4)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 4)
 
     def test_address_limit_is_bounded(self):
@@ -1083,6 +1093,11 @@ class ApplicationSmokeTests(unittest.TestCase):
         finally:
             with get_db() as conn:
                 conn.execute(
+                    "DELETE FROM user_entities WHERE user_id IN ("
+                    "SELECT id FROM users WHERE login IN (?, ?, ?))",
+                    ("created-staff", "created-administrator", "created-curator"),
+                )
+                conn.execute(
                     "DELETE FROM users WHERE login IN (?, ?, ?)",
                     ("created-staff", "created-administrator", "created-curator"),
                 )
@@ -1302,8 +1317,11 @@ class AccessStageTests(unittest.TestCase):
 
         self.assertEqual(user["role"], "administrator")
         self.assertEqual(user["legal_entity_id"], 2)
+        self.assertEqual(user["scope_entity_ids"], [2])
+        # Администратор без режима «Все юрлица» видит только своё юрлицо.
+        self.assertFalse(user["all_entities"])
         self.assertEqual(
-            get_tenant_context(), {"legal_entity_id": 2, "is_group_admin": True}
+            get_tenant_context(), {"legal_entity_ids": [2], "is_group_admin": False}
         )
 
         # Понижение роли в БД действует немедленно, без перевыпуска токена.
@@ -1312,12 +1330,196 @@ class AccessStageTests(unittest.TestCase):
         try:
             demoted = get_current_user(self._request(token))
             self.assertEqual(demoted["role"], "staff")
+            self.assertEqual(demoted["scope_entity_ids"], [2])
             self.assertEqual(
-                get_tenant_context(), {"legal_entity_id": 2, "is_group_admin": False}
+                get_tenant_context(), {"legal_entity_ids": [2], "is_group_admin": False}
             )
         finally:
             with get_db() as conn:
                 conn.execute("UPDATE users SET role = 'administrator' WHERE id = 13")
+
+
+class EntityScopeTests(unittest.TestCase):
+    """Переключение юрлица: членство, сводный режим и запрет создания."""
+
+    PASSWORD = "Scope-Pass-1"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        password_hash = hash_password(cls.PASSWORD)
+        with get_db() as conn:
+            conn.execute("DELETE FROM user_entities WHERE user_id IN (20, 21, 22)")
+            conn.execute("DELETE FROM auth_sessions WHERE user_id IN (20, 21, 22)")
+            conn.execute("DELETE FROM users WHERE id IN (20, 21, 22)")
+            conn.execute(
+                """
+                INSERT INTO legal_entities (id, name, short_name, active)
+                VALUES (2, 'Второе юрлицо', 'Второе', 1)
+                ON CONFLICT(id) DO UPDATE SET name = excluded.name
+                """
+            )
+            conn.execute("DELETE FROM addresses WHERE id IN (5, 6, 7)")
+            conn.execute(
+                """
+                INSERT INTO addresses (id, city, address_name, manufacturer, legal_entity_id, shared)
+                VALUES (5, 'Ростов', 'Личный адрес первой', 'М1', 1, 0),
+                       (6, 'Батайск', 'Личный адрес второй', 'М2', 2, 0),
+                       (7, 'Азов', 'Общий адрес группы', 'М3', 1, 1)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO users (id, login, password_hash, role, legal_entity_id)
+                VALUES (20, 'scope-admin', ?, 'admin', 1),
+                       (21, 'scope-two', ?, 'staff', 2),
+                       (22, 'scope-single', ?, 'staff', 1)
+                """,
+                (password_hash, password_hash, password_hash),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+                VALUES (20, 1, 'admin', 1), (20, 2, 'admin', 0),
+                       (21, 2, 'staff', 1),
+                       (22, 1, 'staff', 1)
+                """
+            )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close()
+
+    def _login(self, login):
+        response = self.client.post(
+            "/api/login", json={"login": login, "password": self.PASSWORD}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return {"Authorization": f"Bearer {response.json()['token']}"}
+
+    def _switch(self, headers, entity_id):
+        return self.client.post(
+            "/api/session/legal-entity",
+            json={"legal_entity_id": entity_id},
+            headers=headers,
+        )
+
+    def test_options_follow_membership(self):
+        single = self.client.get(
+            "/api/legal-entities", headers=self._login("scope-single")
+        ).json()
+        self.assertEqual([option["id"] for option in single["options"]], [1])
+        self.assertFalse(single["can_view_all"])
+        self.assertEqual(single["current"]["legal_entity_id"], 1)
+
+        admin = self.client.get(
+            "/api/legal-entities", headers=self._login("scope-admin")
+        ).json()
+        self.assertEqual([option["id"] for option in admin["options"]], [1, 2])
+        self.assertTrue(admin["can_view_all"])
+
+    def test_switch_to_foreign_entity_is_forbidden(self):
+        headers = self._login("scope-single")
+        self.assertEqual(self._switch(headers, 2).status_code, 403)
+        # Сводный режим доступен только групповому администратору.
+        self.assertEqual(self._switch(headers, None).status_code, 403)
+
+    def test_switch_persists_in_session_and_is_audited(self):
+        headers = self._login("scope-two")
+        self.assertEqual(
+            self.client.get("/api/me", headers=headers).json()["legal_entity_id"], 2
+        )
+        self.assertEqual(self._switch(headers, 2).status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/me", headers=headers).json()["legal_entity_id"], 2
+        )
+        rows = get_db_audit("auth.entity.switch")
+        self.assertTrue(rows)
+
+    def test_new_records_carry_session_entity(self):
+        headers = self._login("scope-two")
+        response = self.client.post(
+            "/api/monitoring",
+            json={"address_id": 6, "text": "Мониторинг второй организации", "media": []},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        report_id = response.json()["report_id"]
+        with get_db() as conn:
+            report = conn.execute(
+                "SELECT legal_entity_id FROM reports WHERE id = ?", (report_id,)
+            ).fetchone()
+            conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        self.assertEqual(report["legal_entity_id"], 2)
+
+    def test_all_entities_mode_blocks_creation(self):
+        headers = self._login("scope-admin")
+        self.assertEqual(self._switch(headers, None).status_code, 200)
+        me = self.client.get("/api/me", headers=headers).json()
+        self.assertTrue(me["all_entities"])
+
+        blocked = self.client.post(
+            "/api/tasks",
+            json={"address_id": 5, "description": "Нельзя без юрлица"},
+            headers=headers,
+        )
+        self.assertEqual(blocked.status_code, 400)
+        self.assertIn("юрлицо", blocked.json()["detail"].lower())
+
+        # Возврат в конкретное юрлицо снова разрешает создание.
+        self.assertEqual(self._switch(headers, 2).status_code, 200)
+        allowed = self.client.post(
+            "/api/tasks",
+            json={"address_id": 6, "description": "Задание второго юрлица"},
+            headers=headers,
+        )
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        task_id = allowed.json()["task_id"]
+        with get_db() as conn:
+            entity_id = conn.execute(
+                "SELECT legal_entity_id FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()["legal_entity_id"]
+            conn.execute("DELETE FROM task_status_history WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        self.assertEqual(entity_id, 2)
+
+    def test_switcher_is_wired_into_role_pages(self):
+        for page in ("client", "admin", "director", "crew", "head", "role_app"):
+            html = (APP_DIR / "templates" / f"{page}.html").read_text(encoding="utf-8")
+            self.assertIn("entity_scope.js", html, page)
+
+        script = (APP_DIR / "static" / "entity_scope.js").read_text(encoding="utf-8")
+        self.assertIn("/api/legal-entities", script)
+        self.assertIn("/api/session/legal-entity", script)
+        # Создание в сводном режиме блокируется и в интерфейсе.
+        self.assertIn("entity-scope-blocked", script)
+
+    def test_users_list_follows_scope(self):
+        headers = self._login("scope-admin")
+        in_entity = {row["login"] for row in self.client.get("/api/users", headers=headers).json()}
+        self.assertIn("scope-single", in_entity)
+        self.assertIn("scope-admin", in_entity)
+        self.assertNotIn("scope-two", in_entity)
+
+        self.assertEqual(self._switch(headers, None).status_code, 200)
+        all_logins = {row["login"] for row in self.client.get("/api/users", headers=headers).json()}
+        self.assertIn("scope-two", all_logins)
+
+        # Пароль пользователя другого юрлица недоступен вне области видимости.
+        self.assertEqual(self._switch(headers, 1).status_code, 200)
+        foreign = self.client.put(
+            "/api/users/21/password",
+            json={"new_password": "Foreign-Pass-1"},
+            headers=headers,
+        )
+        self.assertEqual(foreign.status_code, 403)
+
+
+def get_db_audit(action):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM audit_log WHERE action = ?", (action,)
+        ).fetchall()
 
 
 if __name__ == "__main__":

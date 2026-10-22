@@ -426,6 +426,50 @@ try {
     await administrator.close();
   }
 
+  // ------------------------------------------------------------------
+  // 8. Переключение юрлица (область видимости сессии)
+  // ------------------------------------------------------------------
+  {
+    const page = await newPage();
+    await login(page, "scope-admin", "/admin");
+    await page.waitForSelector("#entityScope", { timeout: 15000 });
+
+    const options = await page.$$eval("#entityScope option", nodes =>
+      nodes.map(node => node.textContent.trim()),
+    );
+    assert.deepEqual(options, ["Все юрлица", "Головная", "Второе"], options);
+    assert.equal(await page.inputValue("#entityScope"), "1", "по умолчанию — своё юрлицо");
+    pass("switcher lists both entities", options.join(", "));
+
+    await page.selectOption("#entityScope", "__all__");
+    await page.waitForTimeout(2500);
+    const banner = await page.textContent("#entityScopeBanner").catch(() => null);
+    assert.ok(banner && banner.includes("Все юрлица"), `banner=${banner}`);
+    assert.equal(await page.inputValue("#entityScope"), "__all__");
+
+    // В сводном режиме сервер запрещает создание без выбранного юрлица.
+    const blockedStatus = await page.evaluate(async () => {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + localStorage.getItem("token"),
+        },
+        body: JSON.stringify({ address_id: 1, description: "E2E без юрлица" }),
+      });
+      return response.status;
+    });
+    assert.equal(blockedStatus, 400, `ожидали 400, получили ${blockedStatus}`);
+    pass("all entities mode blocks creation", "HTTP 400");
+
+    await page.selectOption("#entityScope", "2");
+    await page.waitForTimeout(2500);
+    assert.equal(await page.inputValue("#entityScope"), "2", "выбор не сохранился");
+    assert.equal(await page.$("#entityScopeBanner"), null, "баннер остался");
+    pass("entity switch persists in session", "Второе юрлицо");
+    await page.close();
+  }
+
   console.log(`\nRESULT ${results.filter(item => item.ok).length}/${results.length} passed`);
   await browser.close();
   if (results.some(item => !item.ok)) process.exit(1);
