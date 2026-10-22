@@ -9,6 +9,7 @@ instance/
 *.db
 data/
 uploads/
+pgdata/
 
 *.bak
 *.before_*

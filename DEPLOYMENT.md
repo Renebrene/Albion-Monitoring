@@ -41,16 +41,22 @@ sudo mkdir -p /opt/albion-monitoring
 sudo chown "$USER":"$USER" /opt/albion-monitoring
 git clone https://github.com/Renebrene/albion-monitoring-demo.git /opt/albion-monitoring
 cd /opt/albion-monitoring/app
-git checkout feature/unified-settings-media-hardening
+git checkout <release-branch>   # например feature/postgres-core до merge
 ```
 
 Создайте `app/.env` (файл уже в `.gitignore`, в git не попадёт):
 
 ```bash
+PG_PASSWORD=$(openssl rand -base64 32)
 cat > .env <<EOF
 JWT_SECRET=$(openssl rand -base64 48)
 DB_PATH=/data/monitoring.db
 UPLOADS_DIR=/uploads
+POSTGRES_DB=albion
+POSTGRES_USER=albion
+POSTGRES_PASSWORD=$PG_PASSWORD
+DATABASE_URL=postgresql+psycopg://albion:$PG_PASSWORD@db:5432/albion
+DB_BACKEND=sqlite
 EOF
 chmod 600 .env
 ```
@@ -58,19 +64,22 @@ chmod 600 .env
 Требования:
 
 - `JWT_SECRET` — минимум 32 символа, случайный. Смена ключа завершает все активные сессии.
-- Не используйте старые `SECRET_KEY`/`DATABASE_URL` вместо `JWT_SECRET`/`DB_PATH`.
+- Не используйте старые `SECRET_KEY`/`DATABASE_URL` вместо `JWT_SECRET`.
+- `DB_BACKEND=sqlite` — текущий режим; после переноса данных и проверки
+  переключается на `postgres` (см. `POSTGRES.md`).
 - `PRIVATE_MEDIA_DIR` задавайте только если действительно смонтировали отдельный
   приватный каталог (см. `TECHNICAL_DESCRIPTION.md`).
 
 Создайте постоянные каталоги:
 
 ```bash
-mkdir -p ../data ../uploads
-chmod 750 ../data ../uploads
+mkdir -p ../data ../uploads ../pgdata
+chmod 750 ../data ../uploads ../pgdata
 ```
 
-Compose монтирует `../data` → `/data` и `../uploads` → `/uploads`.
-Эти каталоги должны попадать в backup.
+Compose монтирует `../data` → `/data`, `../uploads` → `/uploads`,
+`../pgdata` → данные PostgreSQL. Все три каталога должны попадать в backup
+(после перехода на PG — `pg_dump`, см. `POSTGRES.md`).
 
 ## 4. Запуск приложения
 
@@ -80,6 +89,7 @@ Compose монтирует `../data` → `/data` и `../uploads` → `/uploads`.
 cd /opt/albion-monitoring/app
 docker compose config
 docker compose up -d --build
+docker compose run --rm migrate   # alembic upgrade head
 docker compose ps
 docker compose logs --tail=100 app
 ```
@@ -93,6 +103,10 @@ ss -ltnp | grep 18000
 ```
 
 В `ss` адрес должен быть `127.0.0.1:18000`, а не `0.0.0.0:18000`.
+
+Пока `DB_BACKEND=sqlite`, приложение работает как раньше. PostgreSQL поднят,
+схема применена, данные можно перенести по `POSTGRES.md`; переключение
+`DB_BACKEND=postgres` — после проверки отчёта миграции.
 
 ## 5. HTTPS
 

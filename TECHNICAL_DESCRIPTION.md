@@ -102,6 +102,8 @@ JWT подписывается HS256. Секрет `JWT_SECRET` обязател
 
 ## 4. Данные и схема
 
+PostgreSQL-схема (`core` + `monitoring`, Alembic) и скрипт переноса из SQLite описаны в `POSTGRES.md`. Сейчас приложение работает через `DB_BACKEND=sqlite`; переключение endpoint-ов на PostgreSQL — следующий шаг, SQLite остаётся точкой отката.
+
 SQLite содержит основные сущности:
 
 - пользователи и сессии (`users`, `auth_sessions`);

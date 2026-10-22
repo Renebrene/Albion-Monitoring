@@ -1,6 +1,34 @@
-version: '3.8'
-
 services:
+  db:
+    image: postgres:16
+    container_name: albion_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-albion}
+      POSTGRES_USER: ${POSTGRES_USER:-albion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in app/.env before starting}
+    volumes:
+      - ../pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-albion} -d ${POSTGRES_DB:-albion}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  migrate:
+    build: .
+    container_name: albion_migrate
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in app/.env before migrating}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
   app:
     build: .
     container_name: albion_app
@@ -11,17 +39,21 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in app/.env before starting}
       DB_PATH: /data/monitoring.db
       UPLOADS_DIR: /uploads
-    ports:
-      # Nginx/Caddy on the host terminates TLS and proxies to loopback.
-      - "127.0.0.1:18000:8000"
+      DB_BACKEND: ${DB_BACKEND:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-}
     volumes:
-      # Keep the same authoritative roots as docker-compose.yml.
+      # Данные вне контейнера — не пропадут при пересборке
       - ../data:/data
       - ../uploads:/uploads
+      # Опционально: добавить отдельный read-write bind mount для PRIVATE_MEDIA_DIR,
+      # но только для каталога вне публичного Albion Files uploads/ и после
+      # ручной настройки минимальных прав Linux service user/group.
+    ports:
+      # Publish only on loopback; Nginx/Caddy terminates TLS and proxies here.
+      - "127.0.0.1:18000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
-    command: gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000

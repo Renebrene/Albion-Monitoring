@@ -1,4 +1,34 @@
 services:
+  db:
+    image: postgres:16
+    container_name: albion_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-albion}
+      POSTGRES_USER: ${POSTGRES_USER:-albion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in app/.env before starting}
+    volumes:
+      - ../pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-albion} -d ${POSTGRES_DB:-albion}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  migrate:
+    build: .
+    container_name: albion_migrate
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in app/.env before migrating}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
   app:
     build: .
     container_name: albion_app
@@ -9,6 +39,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in app/.env before starting}
       DB_PATH: /data/monitoring.db
       UPLOADS_DIR: /uploads
+      DB_BACKEND: ${DB_BACKEND:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-}
     volumes:
       # Данные вне контейнера — не пропадут при пересборке
       - ../data:/data
