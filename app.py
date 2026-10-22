@@ -1406,7 +1406,6 @@ def create_task(data: TaskIn, request: Request):
                 "Создание задания",
             ),
         )
-        task_id = cursor.lastrowid
     return {"ok": True, "task_id": task_id}
 
 

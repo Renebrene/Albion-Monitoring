@@ -41,6 +41,9 @@ services:
       UPLOADS_DIR: /uploads
       DB_BACKEND: ${DB_BACKEND:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     volumes:
       # Данные вне контейнера — не пропадут при пересборке
       - ../data:/data

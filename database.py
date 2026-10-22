@@ -1,5 +1,7 @@
+import re
 import sqlite3
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 import os
 
@@ -11,12 +13,173 @@ PRIVATE_MEDIA_DIR = (
     else None
 )
 
+DB_BACKEND = os.environ.get("DB_BACKEND", "sqlite").strip().lower()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# PostgreSQL backend
+#
+# app.py keeps using sqlite3-style SQL (?, CURRENT_TIMESTAMP, lastrowid).
+# The adapter below translates that to psycopg/PostgreSQL and returns
+# dict-like rows and SQLite-like timestamp strings, so API/UI stay unchanged.
+# Schema and migrations are managed by Alembic (`migrations/`).
+# ---------------------------------------------------------------------------
+
+_INSERT_RE = re.compile(r"^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+([A-Za-z_][\w\.]*)", re.IGNORECASE)
+_PG_TABLES_WITHOUT_ID = {"settings", "schema_migrations"}
+
+_pg_engine = None
+
+
+def _get_pg_engine():
+    global _pg_engine
+    if _pg_engine is None:
+        if not DATABASE_URL:
+            raise RuntimeError("DB_BACKEND=postgres requires DATABASE_URL")
+        from sqlalchemy import create_engine, event
+
+        _pg_engine = create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+            pool_recycle=1800,
+            connect_args={
+                "options": "-csearch_path=monitoring,core,public",
+            },
+        )
+
+        @event.listens_for(_pg_engine, "connect")
+        def _apply_app_role(dbapi_connection, _record):
+            # Enforce RLS: the owner bypasses policies, albion_app does not.
+            # Tenant context is single-entity until per-user context lands.
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("SET ROLE albion_app")
+                cursor.execute("SET app.legal_entity_ids = '1'")
+                cursor.execute("SET app.is_group_admin = 'off'")
+            finally:
+                cursor.close()
+
+    return _pg_engine
+
+
+def _pg_value(value):
+    if isinstance(value, datetime):
+        aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return aware.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+class _PgRow:
+    def __init__(self, mapping):
+        self._mapping = {key: _pg_value(value) for key, value in mapping.items()}
+        self._values = tuple(self._mapping.values())
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self._mapping[key]
+        return self._values[key]
+
+    def __contains__(self, key):
+        return key in self._mapping
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def keys(self):
+        return self._mapping.keys()
+
+    def items(self):
+        return self._mapping.items()
+
+    def get(self, key, default=None):
+        return self._mapping.get(key, default)
+
+
+class _PgResult:
+    def __init__(self, result, lastrowid=None):
+        self._result = result
+        self.lastrowid = lastrowid
+
+    def fetchone(self):
+        row = self._result.fetchone()
+        if row is None:
+            return None
+        return _PgRow(dict(row._mapping))
+
+    def fetchall(self):
+        return [_PgRow(dict(row._mapping)) for row in self._result.fetchall()]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+def _translate_pg_sql(sql: str):
+    translated = sql.replace("?", "%s")
+    match = _INSERT_RE.match(translated)
+    use_returning = False
+
+    if match:
+        table = match.group(1).split(".")[-1].lower()
+        if table not in _PG_TABLES_WITHOUT_ID and "returning" not in translated.lower():
+            translated = translated.rstrip().rstrip(";") + " RETURNING id"
+            use_returning = True
+
+    return translated, use_returning
+
+
+class _PgConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, params=()):
+        # Named parameters (:name) are used by the Excel export queries.
+        if isinstance(params, dict):
+            translated = re.sub(r"(?<![\w:]):([A-Za-z_]\w*)", r"%(\1)s", sql)
+            # PostgreSQL cannot infer types for bare parameters in IS NULL
+            # and in date(...) comparisons.
+            translated = re.sub(
+                r"%\((\w+)\)s IS NULL",
+                r"CAST(%(\1)s AS text) IS NULL",
+                translated,
+            )
+            translated = re.sub(
+                r"(date\([^)]*\)\s*(?:>=|<=|>|<|=)\s*)%\((\w+)\)s",
+                r"\1CAST(%(\2)s AS date)",
+                translated,
+            )
+            result = self._connection.exec_driver_sql(translated, params)
+            return _PgResult(result)
+
+        translated, use_returning = _translate_pg_sql(sql)
+        result = self._connection.exec_driver_sql(translated, tuple(params or ()))
+        lastrowid = None
+
+        if use_returning:
+            row = result.fetchone()
+            lastrowid = row[0] if row is not None else None
+
+        return _PgResult(result, lastrowid)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+
 @contextmanager
-def get_db():
+def _sqlite_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -28,6 +191,28 @@ def get_db():
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def _postgres_db():
+    engine = _get_pg_engine()
+    connection = engine.connect()
+    wrapper = _PgConnection(connection)
+    try:
+        yield wrapper
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+@contextmanager
+def get_db():
+    backend = _sqlite_db() if DB_BACKEND != "postgres" else _postgres_db()
+    with backend as conn:
+        yield conn
 
 
 def _table_columns(conn, table: str) -> set[str]:
@@ -186,7 +371,7 @@ def _apply_schema_migrations(conn):
             raise
 
 
-def init_schema():
+def _init_sqlite_schema():
 
     with get_db() as conn:
         conn.executescript("""
@@ -347,6 +532,41 @@ def init_schema():
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
+
+
+DEFAULT_SETTINGS = {
+    "photos_enabled": "1",
+    "videos_enabled": "1",
+    "photo_max_upload_bytes": str(10 * 1024 * 1024),
+    "video_max_upload_bytes": str(100 * 1024 * 1024),
+    "uploads_quota_bytes": "0",
+}
+
+
+def _init_postgres_schema():
+    with get_db() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'monitoring' AND table_name = 'settings'"
+        ).fetchone()
+        if not exists:
+            raise RuntimeError(
+                "PostgreSQL schema is missing. Run: alembic upgrade head"
+            )
+
+        for key, value in DEFAULT_SETTINGS.items():
+            conn.execute(
+                "INSERT INTO monitoring.settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO NOTHING",
+                (key, value),
+            )
+
+
+def init_schema():
+    if DB_BACKEND == "postgres":
+        _init_postgres_schema()
+    else:
+        _init_sqlite_schema()
 
 
 def get_setting(key: str, default: str = "") -> str:

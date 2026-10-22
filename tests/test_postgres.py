@@ -225,12 +225,12 @@ with database.get_db() as conn:
         self.assertEqual(len(users), 3)
         self.assertEqual({row[3] for row in users}, {1})
         self.assertEqual(task[1], "Задача")
-        self.assertIs(task[2], True)
+        self.assertEqual(task[2], 1)
         self.assertEqual(task[3], 1)
         self.assertEqual(media, ("r1_a.jpg", "local", "orig.jpg"))
         self.assertEqual(comment[0], "Комментарий")
         self.assertEqual(comment[1], ["r1_a.jpg"])
-        self.assertEqual(address, ("Ростов-на-Дону", True))
+        self.assertEqual(address, ("Ростов-на-Дону", 1))
         self.assertEqual(entity_count, 1)
 
     def test_refuses_non_empty_target_without_truncate(self):
@@ -255,9 +255,9 @@ with database.get_db() as conn:
                 INSERT INTO monitoring.addresses
                     (id, legal_entity_id, shared, city, address_name)
                 VALUES
-                    (10, 1, false, 'Ростов-на-Дону', 'Своя для первой'),
-                    (11, 1, true,  'Ростов-на-Дону', 'Общая группы'),
-                    (12, 2, false, 'Батайск', 'Своя для второй')
+                    (10, 1, 0, 'Ростов-на-Дону', 'Своя для первой'),
+                    (11, 1, 1, 'Ростов-на-Дону', 'Общая группы'),
+                    (12, 2, 0, 'Батайск', 'Своя для второй')
                 """
             )
             conn.execute(

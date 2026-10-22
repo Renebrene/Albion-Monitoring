@@ -105,8 +105,19 @@ ss -ltnp | grep 18000
 В `ss` адрес должен быть `127.0.0.1:18000`, а не `0.0.0.0:18000`.
 
 Пока `DB_BACKEND=sqlite`, приложение работает как раньше. PostgreSQL поднят,
-схема применена, данные можно перенести по `POSTGRES.md`; переключение
-`DB_BACKEND=postgres` — после проверки отчёта миграции.
+схема применена, данные можно перенести по `POSTGRES.md`.
+
+После проверки отчёта миграции (`ok: true`):
+
+```bash
+# в app/.env
+DB_BACKEND=postgres
+docker compose up -d app
+curl -fsS https://albion.example.com/healthz
+```
+
+Откат — вернуть `DB_BACKEND=sqlite` и перезапустить app; SQLite-файл остаётся
+нетронутым.
 
 ## 5. HTTPS
 

@@ -163,13 +163,13 @@ def normalize_value(column: str, value):
                 return Jsonb([])
         return Jsonb(value)
     if column in BOOL_COLUMNS:
-        return bool(value)
+        return 1 if bool(value) else 0
     return value
 
 
 def normalize_for_checksum(column: str, value):
     if column in BOOL_COLUMNS:
-        return "true" if bool(value) else "false"
+        return "1" if bool(value) else "0"
     if column in TIMESTAMP_COLUMNS:
         parsed = parse_timestamp(value)
         return parsed.astimezone(timezone.utc).isoformat() if parsed else None
@@ -347,7 +347,7 @@ def migrate_monitoring(conn, sqlite_conn) -> None:
             INSERT INTO monitoring.addresses
                 (id, legal_entity_id, shared, city, address_name, manufacturer,
                  filter1, filter2, filter3, active, updated_at)
-            VALUES (%s, 1, true, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, 1, 1, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 row["id"],
