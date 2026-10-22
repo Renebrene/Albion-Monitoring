@@ -312,11 +312,12 @@ def migrate_core(conn, sqlite_conn, legal_entity_name: str) -> None:
                 normalize_value("created_at", row.get("created_at")),
             ),
         )
+        # is_default — smallint-флаг (0/1), как остальные флаги приложения.
         conn.execute(
             """
             INSERT INTO core.user_entities
                 (user_id, legal_entity_id, role, is_default)
-            VALUES (%s, 1, %s, true)
+            VALUES (%s, 1, %s, 1)
             """,
             (row["id"], row["role"]),
         )

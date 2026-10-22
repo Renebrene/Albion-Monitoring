@@ -1335,6 +1335,35 @@
     <button type="button" class="settings-create-btn" id="saveQuotasBtn">Сохранить квоты</button>
   </div>
 
+  <div class="settings-section" id="entitiesSection" style="display:none">
+
+    <div class="settings-section-title">
+      ЮРЛИЦА ГРУППЫ
+    </div>
+
+    <p class="settings-help">
+      Раздел доступен администратору группы в режиме «Все юрлица».
+      Юрлицо нельзя удалить — его можно переименовать или выключить;
+      данные и история остаются на месте.
+    </p>
+
+    <div id="entitiesList" class="users-list"></div>
+
+    <div class="settings-subtitle">
+      ДОБАВИТЬ ЮРЛИЦО
+    </div>
+
+    <div class="new-user-form">
+      <input type="text" id="newEntityName" placeholder="Название" autocomplete="off">
+      <input type="text" id="newEntityShort" placeholder="Короткое имя" autocomplete="off">
+      <input type="text" id="newEntityInn" placeholder="ИНН" autocomplete="off" inputmode="numeric">
+      <button type="button" class="settings-create-btn" id="createEntityBtn">
+        Добавить юрлицо
+      </button>
+    </div>
+
+  </div>
+
   <div class="settings-section">
 
     <div class="settings-section-title">
@@ -1372,6 +1401,9 @@
         <option value="head">Руководитель</option>
         <option value="admin">Админ</option>
         <option value="administrator">Администратор (профиль Админ)</option>
+      </select>
+
+      <select id="newUserEntity" style="display:none">
       </select>
 
       <button
@@ -2542,6 +2574,93 @@
   font-size: 13px;
   border: 1px dashed #d8dde2;
   border-radius: 10px;
+}
+
+.user-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.entity-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.entity-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #4a525a;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.entity-badge.off {
+  background: #fdecec;
+  color: #b3261e;
+}
+
+.entity-editor {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid #d8dde2;
+  border-radius: 10px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.entity-editor-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #424950;
+}
+
+.entity-editor-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.entity-editor-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.entity-editor-row select {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #d8dde2;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.entity-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.entity-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.entity-inline-form input {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #d8dde2;
+  border-radius: 8px;
+  font-size: 13px;
 }
 
 .new-user-form {

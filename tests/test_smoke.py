@@ -1515,6 +1515,372 @@ class EntityScopeTests(unittest.TestCase):
         self.assertEqual(foreign.status_code, 403)
 
 
+class LegalEntityAdminTests(unittest.TestCase):
+    """Управление юрлицами и членством: только групповой админ в сводном режиме.
+
+    Класс создаёт собственные юрлицо и пользователей, чтобы не зависеть от
+    фикстуры соседних классов.
+    """
+
+    PASSWORD = "Group-Admin-Pass-1"
+    ENTITY_ID = 3
+    ADMIN_ID = 30
+    MEMBER_ID = 31
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        password_hash = hash_password(cls.PASSWORD)
+        with get_db() as conn:
+            conn.execute(
+                "DELETE FROM user_entities WHERE user_id IN (?, ?)",
+                (cls.ADMIN_ID, cls.MEMBER_ID),
+            )
+            conn.execute(
+                "DELETE FROM auth_sessions WHERE user_id IN (?, ?)",
+                (cls.ADMIN_ID, cls.MEMBER_ID),
+            )
+            conn.execute(
+                "DELETE FROM users WHERE id IN (?, ?)", (cls.ADMIN_ID, cls.MEMBER_ID)
+            )
+            conn.execute(
+                """
+                INSERT INTO legal_entities (id, name, short_name, active)
+                VALUES (?, 'ООО Тестовое-3', 'Тестовое-3', 1)
+                ON CONFLICT(id) DO UPDATE
+                    SET name = excluded.name, active = 1
+                """,
+                (cls.ENTITY_ID,),
+            )
+            conn.execute(
+                """
+                INSERT INTO users (id, login, password_hash, role, legal_entity_id)
+                VALUES (?, 'group-admin-qa', ?, 'admin', 1),
+                       (?, 'member-3-qa', ?, 'staff', ?)
+                """,
+                (cls.ADMIN_ID, password_hash, cls.MEMBER_ID, password_hash, cls.ENTITY_ID),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+                VALUES (?, 1, 'admin', 1), (?, ?, 'admin', 0),
+                       (?, ?, 'staff', 1)
+                """,
+                (cls.ADMIN_ID, cls.ADMIN_ID, cls.ENTITY_ID, cls.MEMBER_ID, cls.ENTITY_ID),
+            )
+
+    @classmethod
+    def tearDownClass(cls):
+        with get_db() as conn:
+            conn.execute(
+                "DELETE FROM user_entities WHERE user_id IN (?, ?)",
+                (cls.ADMIN_ID, cls.MEMBER_ID),
+            )
+            conn.execute(
+                "DELETE FROM auth_sessions WHERE user_id IN (?, ?)",
+                (cls.ADMIN_ID, cls.MEMBER_ID),
+            )
+            conn.execute(
+                "DELETE FROM users WHERE id IN (?, ?)", (cls.ADMIN_ID, cls.MEMBER_ID)
+            )
+            conn.execute("DELETE FROM legal_entities WHERE id = ?", (cls.ENTITY_ID,))
+        cls.client.close()
+
+    def _login(self, login, password=None):
+        response = self.client.post(
+            "/api/login", json={"login": login, "password": password or self.PASSWORD}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return {"Authorization": f"Bearer {response.json()['token']}"}
+
+    def _group_admin(self):
+        """Администратор группы, переключённый в сводный режим."""
+        headers = self._login("group-admin-qa")
+        response = self.client.post(
+            "/api/session/legal-entity", json={"legal_entity_id": None}, headers=headers
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return headers
+
+    def _set_entity_active(self, entity_id, active):
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE legal_entities SET active = ? WHERE id = ?",
+                (1 if active else 0, entity_id),
+            )
+
+    def test_requires_group_admin_in_all_entities_mode(self):
+        staff = self._login("member-3-qa")
+        self.assertEqual(
+            self.client.get("/api/admin/legal-entities", headers=staff).status_code, 403
+        )
+        # Админ группы, но в конкретном юрлице — тоже без доступа.
+        in_entity = self._login("group-admin-qa")
+        self.assertEqual(
+            self.client.get("/api/admin/legal-entities", headers=in_entity).status_code, 403
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/legal-entities", headers=self._group_admin()
+            ).status_code,
+            200,
+        )
+
+    def test_create_and_update_legal_entity(self):
+        headers = self._group_admin()
+        created = self.client.post(
+            "/api/admin/legal-entities",
+            json={"name": "ООО Четвёртое", "short_name": "Четвёртое", "inn": "6160000001"},
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        entity_id = created.json()["id"]
+
+        try:
+            listed = self.client.get("/api/admin/legal-entities", headers=headers).json()
+            row = [item for item in listed if item["id"] == entity_id][0]
+            self.assertEqual(row["name"], "ООО Четвёртое")
+            self.assertEqual(row["inn"], "6160000001")
+            self.assertTrue(row["active"])
+            self.assertEqual(row["usage"]["users"], 0)
+
+            renamed = self.client.put(
+                f"/api/admin/legal-entities/{entity_id}",
+                json={"name": "ООО Четвёртое (переименовано)", "active": False},
+                headers=headers,
+            )
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+            listed = self.client.get("/api/admin/legal-entities", headers=headers).json()
+            row = [item for item in listed if item["id"] == entity_id][0]
+            self.assertEqual(row["name"], "ООО Четвёртое (переименовано)")
+            self.assertFalse(row["active"])
+
+            # Выключить последнее активное юрлицо нельзя.
+            active_ids = [
+                item["id"]
+                for item in self.client.get("/api/admin/legal-entities", headers=headers).json()
+                if item["active"]
+            ]
+            for other_id in active_ids:
+                if other_id != self.ENTITY_ID:
+                    self._set_entity_active(other_id, False)
+            last = self.client.put(
+                f"/api/admin/legal-entities/{self.ENTITY_ID}",
+                json={"active": False},
+                headers=headers,
+            )
+            self.assertEqual(last.status_code, 400)
+            self.assertIn("последнее", last.json()["detail"].lower())
+        finally:
+            with get_db() as conn:
+                conn.execute("DELETE FROM legal_entities WHERE id = ?", (entity_id,))
+                conn.execute("UPDATE legal_entities SET active = 1 WHERE id = 1")
+            self._set_entity_active(self.ENTITY_ID, True)
+
+        self.assertTrue(get_db_audit("legal_entity.create"))
+        self.assertTrue(get_db_audit("legal_entity.update"))
+
+    def test_cannot_disable_entity_leaving_users_without_access(self):
+        headers = self._group_admin()
+        # member-3-qa имеет доступ только к третьему юрлицу.
+        response = self.client.put(
+            f"/api/admin/legal-entities/{self.ENTITY_ID}",
+            json={"active": False},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("пользовател", response.json()["detail"])
+
+        # После выдачи доступа к первому юрлицу выключение проходит.
+        membership = self.client.put(
+            f"/api/admin/users/{self.MEMBER_ID}/entities",
+            json={
+                "role": "staff",
+                "entities": [
+                    {"legal_entity_id": self.ENTITY_ID, "is_default": True},
+                    {"legal_entity_id": 1, "is_default": False},
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(membership.status_code, 200, membership.text)
+
+        response = self.client.put(
+            f"/api/admin/legal-entities/{self.ENTITY_ID}",
+            json={"active": False},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self._set_entity_active(self.ENTITY_ID, True)
+
+        # Возвращаем исходное членство.
+        self.client.put(
+            f"/api/admin/users/{self.MEMBER_ID}/entities",
+            json={
+                "role": "staff",
+                "entities": [{"legal_entity_id": self.ENTITY_ID, "is_default": True}],
+            },
+            headers=headers,
+        )
+
+    def test_membership_update_changes_role_and_default_entity(self):
+        headers = self._group_admin()
+        updated = self.client.put(
+            f"/api/admin/users/{self.MEMBER_ID}/entities",
+            json={
+                "role": "head",
+                "entities": [
+                    {"legal_entity_id": 1, "is_default": True},
+                    {"legal_entity_id": self.ENTITY_ID, "is_default": False},
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["default_entity_id"], 1)
+
+        users = {
+            row["login"]: row
+            for row in self.client.get("/api/admin/users", headers=headers).json()
+        }
+        target = users["member-3-qa"]
+        self.assertEqual(target["role"], "head")
+        self.assertEqual(target["legal_entity_id"], 1)
+        self.assertEqual(
+            sorted(item["legal_entity_id"] for item in target["entities"]), [1, self.ENTITY_ID]
+        )
+        self.assertTrue(get_db_audit("user.entities.update"))
+
+        # Понижение роли действует на следующем же запросе пользователя.
+        member_headers = self._login("member-3-qa")
+        self.assertEqual(
+            self.client.get("/api/me", headers=member_headers).json()["role"], "head"
+        )
+        self.assertEqual(
+            self.client.get("/api/me", headers=member_headers).json()["legal_entity_id"], 1
+        )
+
+        # Возврат исходного состояния.
+        self.client.put(
+            f"/api/admin/users/{self.MEMBER_ID}/entities",
+            json={
+                "role": "staff",
+                "entities": [{"legal_entity_id": self.ENTITY_ID, "is_default": True}],
+            },
+            headers=headers,
+        )
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT role, legal_entity_id FROM users WHERE id = ?", (self.MEMBER_ID,)
+            ).fetchone()
+        self.assertEqual((row["role"], row["legal_entity_id"]), ("staff", self.ENTITY_ID))
+
+    def test_membership_validation(self):
+        headers = self._group_admin()
+        cases = [
+            ("не-роль", [{"legal_entity_id": 1}], self.MEMBER_ID, 400),
+            ("staff", [], self.MEMBER_ID, 400),
+            ("staff", [{"legal_entity_id": 999}], self.MEMBER_ID, 400),
+            ("staff", [{"legal_entity_id": 1}], 999999, 404),
+        ]
+        for role, entities, user_id, expected in cases:
+            response = self.client.put(
+                f"/api/admin/users/{user_id}/entities",
+                json={"role": role, "entities": entities},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, expected, (role, entities, response.text))
+
+        # В группе должен остаться администратор: временно убираем остальных.
+        with get_db() as conn:
+            others = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM users WHERE id <> ? AND role IN ('admin', 'administrator')",
+                    (self.ADMIN_ID,),
+                ).fetchall()
+            ]
+            conn.execute(
+                "UPDATE users SET role = 'service' WHERE id IN (%s)"
+                % ",".join("?" * len(others)),
+                tuple(others),
+            ) if others else None
+        try:
+            only_admin = self.client.put(
+                f"/api/admin/users/{self.ADMIN_ID}/entities",
+                json={
+                    "role": "service",
+                    "entities": [
+                        {"legal_entity_id": 1, "is_default": True},
+                        {"legal_entity_id": self.ENTITY_ID, "is_default": False},
+                    ],
+                },
+                headers=headers,
+            )
+            self.assertEqual(only_admin.status_code, 400, only_admin.text)
+            self.assertIn("администратора", only_admin.json()["detail"])
+        finally:
+            with get_db() as conn:
+                for user_id in others:
+                    conn.execute(
+                        "UPDATE users SET role = 'administrator' WHERE id = ?", (user_id,)
+                    )
+
+    def test_admin_ui_is_wired(self):
+        html = (APP_DIR / "templates" / "admin.html").read_text(encoding="utf-8")
+        for element in ("entitiesSection", "entitiesList", "createEntityBtn", "newUserEntity"):
+            self.assertIn(element, html, element)
+
+        script = (APP_DIR / "static" / "admin-settings.js").read_text(encoding="utf-8")
+        self.assertIn("/api/admin/legal-entities", script)
+        self.assertIn("/api/admin/users", script)
+        self.assertIn("entities`,", script)  # PUT доступа к юрлицам пользователя
+        self.assertIn("all_entities", script)
+
+    def test_user_creation_accepts_entity(self):
+        headers = self._group_admin()
+        response = self.client.post(
+            "/api/users",
+            json={
+                "login": "scoped-created",
+                "password": "Scoped-Pass-1",
+                "role": "service",
+                "legal_entity_id": self.ENTITY_ID,
+            },
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        try:
+            with get_db() as conn:
+                user = conn.execute(
+                    "SELECT id, legal_entity_id FROM users WHERE login = 'scoped-created'"
+                ).fetchone()
+                membership = conn.execute(
+                    "SELECT legal_entity_id, is_default FROM user_entities WHERE user_id = ?",
+                    (user["id"],),
+                ).fetchall()
+            self.assertEqual(user["legal_entity_id"], self.ENTITY_ID)
+            self.assertEqual(
+                [(row["legal_entity_id"], row["is_default"]) for row in membership],
+                [(self.ENTITY_ID, 1)],
+            )
+        finally:
+            with get_db() as conn:
+                conn.execute(
+                    "DELETE FROM user_entities WHERE user_id IN "
+                    "(SELECT id FROM users WHERE login = 'scoped-created')"
+                )
+                conn.execute("DELETE FROM users WHERE login = 'scoped-created'")
+
+        # В сводном режиме юрлицо обязательно.
+        missing = self.client.post(
+            "/api/users",
+            json={"login": "no-entity", "password": "Scoped-Pass-1", "role": "service"},
+            headers=headers,
+        )
+        self.assertEqual(missing.status_code, 400)
+
+
 def get_db_audit(action):
     with get_db() as conn:
         return conn.execute(

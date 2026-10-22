@@ -14,8 +14,16 @@ depends_on = None
 
 
 UPGRADE_STATEMENTS = [
+    # Флаги приложения — smallint (active/shared/hidden), поэтому членство
+    # приводим к тому же типу: приложение пишет 0/1.
+    """
+    ALTER TABLE core.user_entities
+        ALTER COLUMN is_default DROP DEFAULT,
+        ALTER COLUMN is_default TYPE smallint
+            USING (CASE WHEN is_default THEN 1 ELSE 0 END),
+        ALTER COLUMN is_default SET DEFAULT 0
+    """,
     # Активный режим сессии: конкретное юрлицо или сводный просмотр группы.
-    # Тип smallint — как у остальных флагов приложения (active/shared/hidden).
     "ALTER TABLE core.sessions ADD COLUMN IF NOT EXISTS all_entities smallint NOT NULL DEFAULT 0",
     # Приложение работает через вьюху, ей тоже нужен новый столбец.
     "DROP VIEW IF EXISTS public.auth_sessions",
@@ -31,7 +39,7 @@ UPGRADE_STATEMENTS = [
     # Членство для уже существующих пользователей: их текущее юрлицо.
     """
     INSERT INTO core.user_entities (user_id, legal_entity_id, role, is_default)
-    SELECT users.id, users.legal_entity_id, users.role, true
+    SELECT users.id, users.legal_entity_id, users.role, 1
     FROM core.users
     WHERE users.legal_entity_id IS NOT NULL
       AND NOT EXISTS (

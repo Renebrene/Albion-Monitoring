@@ -470,6 +470,92 @@ try {
     await page.close();
   }
 
+  // ------------------------------------------------------------------
+  // 9. Юрлица и доступ пользователей в настройках администратора
+  // ------------------------------------------------------------------
+  {
+    const page = await newPage();
+    await login(page, "scope-admin", "/admin");
+
+    await page.click("#settingsToggle");
+    await page.waitForSelector("#settingsPanel.open");
+    await page.waitForTimeout(800);
+    assert.equal(
+      await page.locator("#entitiesSection").isVisible(),
+      false,
+      "раздел юрлиц виден в режиме одного юрлица",
+    );
+
+    await page.selectOption("#entityScope", "__all__");
+    await page.waitForTimeout(2500);
+    await page.click("#settingsToggle");
+    await page.waitForSelector("#entitiesSection", { state: "visible", timeout: 15000 });
+    await page.waitForTimeout(800);
+
+    const initialEntities = await page.locator("#entitiesList .user-row").count();
+    assert.ok(initialEntities >= 2, `ожидали 2+ юрлица, получили ${initialEntities}`);
+
+    // Создание юрлица.
+    await page.fill("#newEntityName", "ООО Проверка E2E");
+    await page.fill("#newEntityShort", "Проверка E2E");
+    await page.fill("#newEntityInn", "6160000099");
+    await page.click("#createEntityBtn");
+    await page.waitForTimeout(1200);
+
+    const newRow = page
+      .locator("#entitiesList .user-row")
+      .filter({ hasText: "ООО Проверка E2E" })
+      .last();
+    assert.equal(await newRow.count(), 1, "юрлицо не появилось в списке");
+
+    // Переименование и выключение.
+    await newRow.locator("[data-entity-edit]").click();
+    await newRow.locator("#entityEditName").fill("ООО Проверка E2E (изм.)");
+    await newRow.locator("#entityEditSave").click();
+    await page.waitForTimeout(1200);
+    const renamedRow = page
+      .locator("#entitiesList .user-row")
+      .filter({ hasText: "ООО Проверка E2E (изм.)" });
+    assert.equal(await renamedRow.count(), 1, "переименование не применилось");
+
+    await renamedRow.locator("[data-entity-toggle]").click();
+    await page.waitForTimeout(1200);
+    const renamedRowAfter = page
+      .locator("#entitiesList .user-row")
+      .filter({ hasText: "ООО Проверка E2E (изм.)" });
+    assert.equal(
+      await renamedRowAfter.locator(".entity-badge.off").count(),
+      1,
+      "юрлицо не помечено выключенным",
+    );
+    pass("entity CRUD from admin settings", "создание, переименование, выключение");
+
+    // Доступ пользователя: выдаём сервису второе юрлицо.
+    const userRow = page
+      .locator("#usersList .user-row")
+      .filter({ hasText: "service" })
+      .first();
+    await userRow.locator("[data-user-access]").click();
+    await page.waitForTimeout(400);
+
+    const userId = await userRow.getAttribute("data-user-row");
+    const boxes = userRow.locator("[data-access-entity]");
+    assert.ok((await boxes.count()) >= 2, "нет списка юрлиц в редакторе доступа");
+    await boxes.nth(1).check();
+    await userRow.locator(`input[name="accessDefault${userId}"][value="2"]`).check();
+    await userRow.locator(`#accessSave${userId}`).click();
+    await page.waitForTimeout(1500);
+
+    const badges = await userRow.locator(".entity-badge").allTextContents();
+    assert.ok(badges.length >= 2, `ожидали два юрлица, получили: ${badges.join(", ")}`);
+    assert.ok(
+      badges.some(badge => badge.includes("★")),
+      `основное юрлицо не отмечено: ${badges.join(", ")}`,
+    );
+    pass("user entity access updated", badges.join(", "));
+    await page.close();
+  }
+
   console.log(`\nRESULT ${results.filter(item => item.ok).length}/${results.length} passed`);
   await browser.close();
   if (results.some(item => !item.ok)) process.exit(1);

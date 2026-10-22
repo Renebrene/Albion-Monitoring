@@ -694,6 +694,26 @@ def login(data: LoginIn, request: Request):
             """,
             (row["id"], row["login"], row["role"], expires_at, row["legal_entity_id"] or 1),
         )
+
+        # Членство по «домашнему» юрлицу: старые базы и прямые вставки в users
+        # могли не создать строку, без неё редактор доступа покажет пустой набор.
+        conn.execute(
+            """
+            INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+            SELECT ?, ?, ?, 1
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_entities
+                WHERE user_id = ? AND legal_entity_id = ?
+            )
+            """,
+            (
+                row["id"],
+                row["legal_entity_id"] or 1,
+                row["role"],
+                row["id"],
+                row["legal_entity_id"] or 1,
+            ),
+        )
         session_id = cur.lastrowid
 
         # Привязываем JWT к конкретной сессии и версии прав.
@@ -2529,17 +2549,50 @@ def export_excel(
 # ---------- Запуск ----------
 
 # ========== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И НАСТРОЙКАМИ (АДМИН) ==========
+USER_ROLES = (
+    "admin",
+    "service",
+    "director",
+    "crew",
+    "head",
+    "staff",
+    "administrator",
+    "curator",
+)
+
+
 class UserIn(BaseModel):
     login: str
     password: str
     role: str
+    legal_entity_id: Optional[int] = None
+
 
 class PasswordIn(BaseModel):
     new_password: str
 
+
+class MembershipEntityIn(BaseModel):
+    legal_entity_id: int
+    is_default: bool = False
+
+
+class MembershipIn(BaseModel):
+    role: str
+    entities: List[MembershipEntityIn]
+
+
+class LegalEntityIn(BaseModel):
+    # Все поля опциональны: PUT приходит частичным. Обязательность названия
+    # проверяется отдельно, чтобы отвечать 400, а не 422.
+    name: Optional[str] = None
+    short_name: Optional[str] = None
+    inn: Optional[str] = None
+    active: Optional[bool] = None
+
+
 @app.get("/api/users")
 def list_users_api(request: Request):
-    require_any(request, ["admin"])
     # Сначала определяем область видимости, потом открываем соединение:
     # контекст юрлица применяется при выдаче соединения.
     user = require_any(request, ["admin"])
@@ -2568,18 +2621,16 @@ def user_in_scope(conn, user: dict, target_user_id: int) -> bool:
 @app.post("/api/users")
 def create_user_api(data: UserIn, request: Request):
     user = require_any(request, ["admin"])
-    if data.role not in (
-        "admin",
-        "service",
-        "director",
-        "crew",
-        "head",
-        "staff",
-        "administrator",
-        "curator",
-    ):
+    if data.role not in USER_ROLES:
         raise HTTPException(status_code=400, detail="Неверная роль")
-    entity_id = require_entity_scope(user)
+
+    if data.legal_entity_id is not None:
+        allowed_ids = {option["id"] for option in user_entity_options(user)}
+        if int(data.legal_entity_id) not in allowed_ids:
+            raise HTTPException(status_code=403, detail="Нет доступа к этому юрлицу")
+        entity_id = int(data.legal_entity_id)
+    else:
+        entity_id = require_entity_scope(user)
     with get_db() as conn:
         exists = conn.execute("SELECT 1 FROM users WHERE login = ?", (data.login,)).fetchone()
         if exists:
@@ -2652,7 +2703,323 @@ def change_password_api(user_id: int, data: PasswordIn, request: Request):
             request=request,
         )
     return {"ok": True}
-# =========================================================================
+
+
+# ---------- Юрлица группы и членство ----------
+def require_group_scope_manager(request: Request) -> dict:
+    """Управление юрлицами доступно групповому администратору в сводном режиме."""
+    user = require_any(request, ["admin"])
+    if not (user.get("is_group_admin") and user.get("all_entities")):
+        raise HTTPException(
+            status_code=403,
+            detail="Управление юрлицами доступно в режиме «Все юрлица»",
+        )
+    return user
+
+
+def entity_usage(conn, entity_id: int) -> dict:
+    """Сколько данных привязано к юрлицу — для предупреждений в интерфейсе."""
+
+    def count(table: str) -> int:
+        return conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE legal_entity_id = ?", (entity_id,)
+        ).fetchone()[0]
+
+    return {
+        "users": conn.execute(
+            "SELECT COUNT(*) FROM user_entities WHERE legal_entity_id = ?",
+            (entity_id,),
+        ).fetchone()[0],
+        "addresses": count("addresses"),
+        "tasks": count("tasks"),
+        "reports": count("reports"),
+    }
+
+
+def entity_payload(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "short_name": row["short_name"],
+        "inn": row["inn"],
+        "active": bool(row["active"]),
+    }
+
+
+@app.get("/api/admin/legal-entities")
+def admin_list_legal_entities(request: Request):
+    require_group_scope_manager(request)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, name, short_name, inn, active FROM legal_entities ORDER BY id"
+        ).fetchall()
+        return [
+            {**entity_payload(row), "usage": entity_usage(conn, row["id"])}
+            for row in rows
+        ]
+
+
+@app.post("/api/admin/legal-entities")
+def admin_create_legal_entity(data: LegalEntityIn, request: Request):
+    user = require_group_scope_manager(request)
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите название юрлица")
+
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO legal_entities (name, short_name, inn, active)
+            VALUES (?, ?, ?, 1)
+            """,
+            (
+                name,
+                (data.short_name or "").strip() or None,
+                (data.inn or "").strip() or None,
+            ),
+        )
+        entity_id = cursor.lastrowid
+        write_audit(
+            conn,
+            user,
+            "legal_entity.create",
+            "legal_entity",
+            entity_id,
+            after={"name": name, "short_name": data.short_name, "inn": data.inn},
+            request=request,
+        )
+
+    return {"ok": True, "id": entity_id}
+
+
+@app.put("/api/admin/legal-entities/{entity_id}")
+def admin_update_legal_entity(entity_id: int, data: LegalEntityIn, request: Request):
+    user = require_group_scope_manager(request)
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, name, short_name, inn, active FROM legal_entities WHERE id = ?",
+            (entity_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Юрлицо не найдено")
+
+        name = (data.name or "").strip() or row["name"]
+        active = int(row["active"]) if data.active is None else (1 if data.active else 0)
+
+        if not active and int(row["active"]):
+            others = conn.execute(
+                "SELECT COUNT(*) FROM legal_entities WHERE active = 1 AND id <> ?",
+                (entity_id,),
+            ).fetchone()[0]
+            if not others:
+                raise HTTPException(
+                    status_code=400, detail="Нельзя выключить последнее активное юрлицо"
+                )
+            # Пользователи, для которых это юрлицо — единственное: они потеряют доступ.
+            stranded = conn.execute(
+                """
+                SELECT COUNT(*) FROM user_entities current
+                WHERE current.legal_entity_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM user_entities other
+                      JOIN legal_entities other_entity ON other_entity.id = other.legal_entity_id
+                      WHERE other.user_id = current.user_id
+                        AND other.legal_entity_id <> ?
+                        AND other_entity.active = 1
+                  )
+                """,
+                (entity_id, entity_id),
+            ).fetchone()[0]
+            if stranded:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Нельзя выключить юрлицо: {stranded} пользовател(ь/я/ей) "
+                        "не имеют доступа к другим активным юрлицам"
+                    ),
+                )
+
+        before = entity_payload(row)
+        conn.execute(
+            """
+            UPDATE legal_entities
+            SET name = ?, short_name = ?, inn = ?, active = ?
+            WHERE id = ?
+            """,
+            (
+                name,
+                (data.short_name if data.short_name is not None else row["short_name"]) or None,
+                (data.inn if data.inn is not None else row["inn"]) or None,
+                active,
+                entity_id,
+            ),
+        )
+        after = {
+            "id": entity_id,
+            "name": name,
+            "short_name": data.short_name,
+            "inn": data.inn,
+            "active": bool(active),
+        }
+        write_audit(
+            conn,
+            user,
+            "legal_entity.update",
+            "legal_entity",
+            entity_id,
+            before=before,
+            after=after,
+            request=request,
+        )
+
+    return {"ok": True}
+
+
+@app.get("/api/admin/users")
+def admin_list_users(request: Request):
+    """Пользователи с членством по юрлицам — для управления доступом."""
+    require_group_scope_manager(request)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, login, role, active, legal_entity_id FROM users ORDER BY login"
+        ).fetchall()
+        membership_rows = conn.execute(
+            """
+            SELECT user_id, legal_entity_id, role, is_default
+            FROM user_entities
+            ORDER BY legal_entity_id
+            """
+        ).fetchall()
+
+    memberships = {}
+    for row in membership_rows:
+        memberships.setdefault(row["user_id"], []).append(
+            {
+                "legal_entity_id": row["legal_entity_id"],
+                "role": row["role"],
+                "is_default": bool(row["is_default"]),
+            }
+        )
+
+    payload = []
+    for row in rows:
+        entities = memberships.get(row["id"], [])
+        home_entity_id = row["legal_entity_id"] or 1
+        # Собственное юрлицо всегда доступно, даже если строки членства нет.
+        if not any(item["legal_entity_id"] == home_entity_id for item in entities):
+            entities = [
+                {
+                    "legal_entity_id": home_entity_id,
+                    "role": row["role"],
+                    "is_default": not entities,
+                },
+                *entities,
+            ]
+
+        payload.append(
+            {
+                "id": row["id"],
+                "login": row["login"],
+                "role": row["role"],
+                "active": bool(row["active"]),
+                "legal_entity_id": home_entity_id,
+                "entities": entities,
+            }
+        )
+
+    return payload
+
+
+@app.put("/api/admin/users/{user_id}/entities")
+def admin_update_user_entities(user_id: int, data: MembershipIn, request: Request):
+    user = require_group_scope_manager(request)
+    if data.role not in USER_ROLES:
+        raise HTTPException(status_code=400, detail="Неверная роль")
+
+    requested = {item.legal_entity_id: bool(item.is_default) for item in data.entities}
+    if not requested:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы одно юрлицо")
+
+    with get_db() as conn:
+        target = conn.execute(
+            "SELECT id, login, role, legal_entity_id FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+        active_ids = {
+            row["id"]
+            for row in conn.execute("SELECT id FROM legal_entities WHERE active = 1").fetchall()
+        }
+        unavailable = sorted(set(requested) - active_ids)
+        if unavailable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Юрлица недоступны или выключены: {', '.join(map(str, unavailable))}",
+            )
+
+        # В группе обязан остаться хотя бы один администратор.
+        if get_base_role(data.role) != "admin":
+            other_admins = conn.execute(
+                """
+                SELECT COUNT(*) FROM users
+                WHERE id <> ? AND role IN ('admin', 'administrator')
+                """,
+                (user_id,),
+            ).fetchone()[0]
+            if not other_admins:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Нельзя убрать администратора: в группе не останется ни одного",
+                )
+
+        defaults = [entity_id for entity_id, is_default in requested.items() if is_default]
+        default_entity_id = defaults[0] if defaults else sorted(requested)[0]
+
+        before_rows = conn.execute(
+            "SELECT legal_entity_id, role, is_default FROM user_entities WHERE user_id = ? "
+            "ORDER BY legal_entity_id",
+            (user_id,),
+        ).fetchall()
+        before = [
+            {
+                "legal_entity_id": row["legal_entity_id"],
+                "role": row["role"],
+                "is_default": bool(row["is_default"]),
+            }
+            for row in before_rows
+        ]
+
+        conn.execute("DELETE FROM user_entities WHERE user_id = ?", (user_id,))
+        for entity_id in sorted(requested):
+            conn.execute(
+                """
+                INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, entity_id, data.role, 1 if entity_id == default_entity_id else 0),
+            )
+        # Основное юрлицо и роль пользователя следуют за выбором администратора.
+        conn.execute(
+            "UPDATE users SET role = ?, legal_entity_id = ? WHERE id = ?",
+            (data.role, default_entity_id, user_id),
+        )
+        write_audit(
+            conn,
+            user,
+            "user.entities.update",
+            "user",
+            user_id,
+            before={"entities": before},
+            after={
+                "role": data.role,
+                "default_entity_id": default_entity_id,
+                "entities": sorted(requested),
+            },
+            request=request,
+        )
+
+    return {"ok": True, "default_entity_id": default_entity_id}
 
 
 # ========== ЧАТ И КОММЕНТАРИИ ==========

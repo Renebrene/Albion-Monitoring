@@ -31,7 +31,8 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 
 _INSERT_RE = re.compile(r"^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+([A-Za-z_][\w\.]*)", re.IGNORECASE)
-_PG_TABLES_WITHOUT_ID = {"settings", "schema_migrations"}
+# Таблицы без суррогатного id: адаптер не должен дописывать RETURNING id.
+_PG_TABLES_WITHOUT_ID = {"settings", "schema_migrations", "user_entities"}
 
 _pg_engine = None
 
