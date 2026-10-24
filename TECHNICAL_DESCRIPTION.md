@@ -164,7 +164,7 @@ API: `GET /api/legal-entities`, `POST /api/session/legal-entity`.
 - `app.py` — FastAPI app, endpoints, workflow, upload/media, settings и export.
 - `database.py` — SQLite connection helper, базовая схема и versioned additive migrations v1/v2, settings helpers.
 - `auth.py` — JWT, bcrypt, роли и проверки доступа.
-- `role_capabilities.py` — декларативные возможности новых role profiles.
+- `permissions.py` — каталог возможностей, системные роли и реестр переходов workflow.
 - `templates/` — страницы login/client/server/tasks/admin/director/crew/head и shared role page.
 - `static/` — страничный JS, общий `auth.js`, защищённая загрузка media в `media.js`, общие card models и дизайн-тема.
 - `tests/` — изолированные API/schema/cleanup regression tests.
@@ -182,6 +182,8 @@ SQLite содержит основные сущности:
 - отчёты и media links (`reports`, `media`);
 - отдельные отчёты Экипажа и комментарии Руководителя (`crew_monitorings`, `crew_monitoring_media`, `crew_report_comments`, `crew_report_comment_media`);
 - задания, сообщения, директорские комментарии и история workflow (`tasks`, `comments`, `director_comments`, `task_status_history`);
+- юрлица пользователя и права переходов (`user_entities`, `workflow_transitions`);
+- роли и возможности конструктора (`roles`, `capabilities`, `role_capabilities`), типы заданий (`task_types`);
 - key/value параметры приложения (`settings`).
 
 `database.py` выполняет миграции при импорте приложения. Version v1 добавляет поля workflow и необходимые comment/history tables, v2 — soft-hide/original filename columns и индексы, v3 — активность и версию прав пользователя, отзыв/срок/отпечаток сессии, таблицы `legal_entities` и `audit_log`. Миграции аддитивные: не удаляют/не пересоздают существующие строки. Они проверены на чистой и синтетической legacy SQLite, а v3 — и на копии рабочей БД (сверка количества строк и контрольных сумм). Перед production rollout всё равно нужен backup и rehearsal на свежей копии.
