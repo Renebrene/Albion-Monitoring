@@ -1952,6 +1952,7 @@ def list_tasks(
     status: Optional[str] = None,
     city: Optional[str] = None,
     manufacturer: Optional[str] = None,
+    task_type_id: Optional[int] = None,
 ):
     user = get_current_user(request)
     if user["workplace"] == "service" and status != "open":
@@ -1984,6 +1985,8 @@ def list_tasks(
             sql += " AND a.city = ?"; params.append(city)
         if manufacturer:
             sql += " AND a.manufacturer = ?"; params.append(manufacturer)
+        if task_type_id:
+            sql += " AND t.task_type_id = ?"; params.append(task_type_id)
         sql += " ORDER BY t.created_at DESC"
         rows = conn.execute(sql, params).fetchall()
 
@@ -2545,15 +2548,18 @@ def export_excel(
     from openpyxl.styles import Font, PatternFill
 
     with get_db() as conn:
+        schemas_by_id = task_type_schemas(conn)
         tasks = conn.execute(
             """
             SELECT t.id, t.description, t.status, t.created_at, t.closed_at,
+                   t.extra_fields, t.task_type_id, tt.name AS task_type_name,
                    a.city, a.address_name, a.manufacturer,
                    u.login AS author, cu.login AS closed_by
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
             LEFT JOIN users cu ON cu.id = t.closed_by
+            LEFT JOIN task_types tt ON tt.id = t.task_type_id
             WHERE (:df IS NULL OR date(t.created_at) >= :df)
               AND (:dt IS NULL OR date(t.created_at) <= :dt)
               AND (:city IS NULL OR a.city = :city)
@@ -2594,18 +2600,34 @@ def export_excel(
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="1E40AF")
 
+    # Динамические колонки доп. полей: по всем типам в выборке.
+    extra_labels: list = []
+    key_by_label: dict = {}
+    for t in tasks:
+        for item in (schemas_by_id.get(t["task_type_id"]) or {}).get("fields", []):
+            key = item["key"]
+            label = item.get("label") or key
+            if label not in key_by_label.values():
+                key_by_label[label] = key
+                extra_labels.append(label)
+
     ws1 = wb.active
     ws1.title = "Задания"
-    headers1 = ["№", "Город", "Адрес", "Производитель", "Описание", "Статус",
+    headers1 = ["№", "Город", "Адрес", "Производитель", "Тип задания", "Описание",
+                *extra_labels, "Статус",
                 "Создано", "Автор", "Закрыто", "Исполнитель"]
     ws1.append(headers1)
     for cell in ws1[1]:
         cell.font = header_font
         cell.fill = header_fill
     for t in tasks:
+        values = decode_extra_fields(t["extra_fields"])
+        extra_values = [values.get(key_by_label[label], "") for label in extra_labels]
         ws1.append([
             t["id"], t["city"], t["address_name"], t["manufacturer"] or "",
+            t["task_type_name"] or "Обычное задание",
             t["description"],
+            *extra_values,
             "Выполнено" if t["status"] == "done" else "Открыто",
             t["created_at"], t["author"],
             t["closed_at"] or "", t["closed_by"] or "",

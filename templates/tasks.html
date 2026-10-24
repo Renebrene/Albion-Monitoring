@@ -133,6 +133,9 @@
       <button class="btn ghost chip active" data-status="open" style="color:var(--ink);border-color:var(--border)">Открытые</button>
       <button class="btn ghost chip" data-status="done" style="color:var(--ink);border-color:var(--border)">Выполненные</button>
       <button class="btn ghost chip" data-status="all" style="color:var(--ink);border-color:var(--border)">Все</button>
+      <select id="taskTypeFilter" style="margin:0;padding:8px 10px;font-size:13px">
+        <option value="">Все типы</option>
+      </select>
     </div>
   </div>
   <div id="taskList"></div>
@@ -238,6 +241,7 @@
 
 <div class="toast" id="toast"></div>
 <script src="/static/auth.js?v=5"></script>
+<script src="/static/task_types_ui.js?v=1"></script>
 <script src="/static/entity_scope.js?v=1"></script>
 <script src="/static/media.js?v=2"></script>
 <script src="/static/tasks.js?v=119"></script>

@@ -364,6 +364,72 @@ class ApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(len(list(all_book["Задания"].values)), 5)
         self.assertEqual(len(list(all_book["Мониторинг"].values)), 3)
 
+    def test_excel_export_includes_task_type_and_extra_fields(self):
+        # Задание с типом и доп. полем попадает в экспорт с колонкой поля.
+        create = self.client.post(
+            "/api/tasks",
+            json={
+                "address_id": 1,
+                "description": "Экспорт с типом",
+                "task_type": "standard",
+                "extra_fields": {},
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(create.status_code, 200, create.text)
+        task_id = create.json()["task_id"]
+        try:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE tasks SET extra_fields = ? WHERE id = ?",
+                    ('{"serial": "SN-123"}', task_id),
+                )
+                # Дополняем схему системного типа полем serial.
+                conn.execute(
+                    "UPDATE task_types SET fields_schema = ? WHERE code = 'standard'",
+                    ('[{"key": "serial", "label": "Серийный номер", "type": "text"}]',),
+                )
+
+            response = self.client.get("/api/export/excel", headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+
+            from io import BytesIO
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(BytesIO(response.content), read_only=True)
+            sheet = workbook["Задания"]
+            rows = list(sheet.values)
+            headers = list(rows[0])
+            self.assertIn("Тип задания", headers)
+            self.assertIn("Серийный номер", headers)
+
+            target = [row for row in rows if row[0] == task_id]
+            self.assertEqual(len(target), 1)
+            row = target[0]
+            type_index = headers.index("Тип задания")
+            serial_index = headers.index("Серийный номер")
+            self.assertEqual(row[type_index], "Обычное задание")
+            self.assertEqual(row[serial_index], "SN-123")
+
+            # Фильтр по типу в списке задач.
+            standard = self.client.get(
+                "/api/tasks", params={"task_type_id": 1}, headers=self.headers
+            ).json()
+            self.assertTrue(all(item["task_type"] == "Обычное задание" for item in standard))
+        finally:
+            with get_db() as conn:
+                conn.execute("DELETE FROM task_status_history WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM comments WHERE task_id = ?", (task_id,))
+                conn.execute(
+                    "DELETE FROM director_comments WHERE item_type = 'task' AND item_id = ?",
+                    (task_id,),
+                )
+                conn.execute("DELETE FROM media WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+                conn.execute(
+                    "UPDATE task_types SET fields_schema = '[]' WHERE code = 'standard'"
+                )
+
     def test_frontend_loads_media_through_authenticated_helper(self):
         source = (APP_DIR / "static" / "media.js").read_text(encoding="utf-8")
         self.assertIn('headers: tokenHeaders()', source)

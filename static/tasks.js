@@ -83,6 +83,14 @@ const renderTasks = (tasks) => {
           <div class="city">${esc(t.city)}</div>
           <div class="addr">${esc(t.address_name)}</div>
           <div class="task-desc">${esc(t.description)}</div>
+          ${
+            (t.extra_fields && t.extra_fields.length) || (t.task_type && t.task_type !== "Обычное задание")
+              ? `<div style="font-size:12px;color:var(--muted);margin-top:6px">
+                   ${t.task_type && t.task_type !== "Обычное задание" ? `<div>${esc(t.task_type)}</div>` : ""}
+                   ${(t.extra_fields || []).map(f => `<div><b>${esc(f.label)}:</b> ${esc(f.value)}</div>`).join("")}
+                 </div>`
+              : ""
+          }
 
           ${
             Array.isArray(t.media) && t.media.length
@@ -282,7 +290,9 @@ window.sendComment = async (taskId) => {
 
 const loadTasks = async () => {
   try {
-    const tasks = await API(`/api/tasks?status=${currentStatus}`, {headers: authHeaders()});
+    const typeFilter = document.getElementById("taskTypeFilter");
+    const typeParam = typeFilter && typeFilter.value ? `&task_type_id=${typeFilter.value}` : "";
+    const tasks = await API(`/api/tasks?status=${currentStatus}${typeParam}`, {headers: authHeaders()});
     renderTasks(tasks);
   } catch(e) {
     const list = document.getElementById("taskList");
@@ -387,6 +397,14 @@ window.toggleImportant = async (taskId, value) => {
     });
     toast(value ? "⭐ Задание помечено как важное" : "☆ Метка важности снята");
     loadTasks();
+  if (window.TaskTypesUI) {
+    window.TaskTypesUI.load().then(types => {
+      const select = document.getElementById("taskTypeFilter");
+      if (!select || !types?.length) return;
+      types.forEach(type => select.appendChild(new Option(type.name, String(type.id))));
+      select.onchange = () => loadTasks();
+    }).catch(() => {});
+  }
   } catch(e) { toast(e.message, true); }
 };
 
