@@ -13,6 +13,8 @@
 | [`POSTGRES.md`](POSTGRES.md) | PostgreSQL: схема `core`/`monitoring`, RLS, миграции Alembic, перенос из SQLite, область видимости юрлиц |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | Развёртывание: Docker Compose, HTTPS (Caddy), тоннель, бэкапы, второе юрлицо |
 | [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) | Руководство администратора: юрлица, роли, доступы, типы заданий, переходы |
+| [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) | Обзор проекта со скриншотами: интерфейсы, логика, справочник API и функций |
+| [`docs/presentation.html`](docs/presentation.html) | Презентация проекта (самодостаточный HTML, открыть в браузере) |
 | [`CHANGELOG.md`](CHANGELOG.md) | История изменений по этапам |
 | [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) | Руководство администратора |
 | [`docs/archive/AUDIT_2026-09.md`](docs/archive/AUDIT_2026-09.md) | Архив: исходный аудит проекта (сентябрь 2026) |
