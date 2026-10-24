@@ -39,6 +39,7 @@ _PG_TABLES_WITHOUT_ID = {
     "user_entities",
     "capabilities",
     "role_capabilities",
+    "workflow_transitions",
 }
 
 _pg_engine = None
@@ -633,6 +634,20 @@ def _migration_7_task_types(conn):
     )
 
 
+def _migration_8_workflow_transitions(conn):
+    """Настройка прав переходов: по строке на переход."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS workflow_transitions (
+            code TEXT PRIMARY KEY,
+            from_status TEXT NOT NULL,
+            to_status TEXT NOT NULL,
+            label TEXT NOT NULL,
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            is_system INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+
+
 def _apply_schema_migrations(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -649,6 +664,7 @@ def _apply_schema_migrations(conn):
         (5, "roles_and_capabilities", _migration_5_roles_and_capabilities),
         (6, "custom_role_codes", _migration_6_custom_role_codes),
         (7, "task_types", _migration_7_task_types),
+        (8, "workflow_transitions", _migration_8_workflow_transitions),
     )
     for version, name, migration in migrations:
         applied = conn.execute(
@@ -884,6 +900,16 @@ def _init_sqlite_schema():
                 extra_fields TEXT
             );
 
+            -- Права переходов workflow (статусы фиксированы в коде).
+            CREATE TABLE IF NOT EXISTS workflow_transitions (
+                code TEXT PRIMARY KEY,
+                from_status TEXT NOT NULL,
+                to_status TEXT NOT NULL,
+                label TEXT NOT NULL,
+                capabilities TEXT NOT NULL DEFAULT '[]',
+                is_system INTEGER NOT NULL DEFAULT 1
+            );
+
             -- Настройки приложения (вкл/выкл фото, видео)
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -1003,6 +1029,47 @@ def sync_task_types():
         )
 
 
+def sync_workflow_transitions():
+    """Создаёт строки переходов, если их ещё нет.
+
+    Списки возможностей, настроенные администратором, не перезаписываются:
+    рассинхрон с каталогом отфильтровывается при чтении.
+    """
+    from permissions import WORKFLOW_TRANSITIONS
+
+    with get_db() as conn:
+        # PG: схема создаётся Alembic'ом; если приложение запущено раньше
+        # миграций, аккуратно выходим — таблицу создаст alembic upgrade.
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_transitions'"
+        ).fetchone() if DB_BACKEND != "postgres" else conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'workflow_transitions'"
+        ).fetchone()
+        if not exists:
+            return
+
+        for code, config in WORKFLOW_TRANSITIONS.items():
+            conn.execute(
+                """
+                INSERT INTO workflow_transitions
+                    (code, from_status, to_status, label, capabilities, is_system)
+                SELECT ?, ?, ?, ?, ?, 1
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM workflow_transitions WHERE code = ?
+                )
+                """,
+                (
+                    code,
+                    ",".join(config["from"]),
+                    config["to"],
+                    config["label"],
+                    json.dumps([config["default_capability"]]),
+                    code,
+                ),
+            )
+
+
 def init_schema():
     if DB_BACKEND == "postgres":
         _init_postgres_schema()
@@ -1011,6 +1078,7 @@ def init_schema():
 
     sync_permissions()
     sync_task_types()
+    sync_workflow_transitions()
 
 
 def sync_permissions():

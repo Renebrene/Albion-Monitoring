@@ -39,8 +39,8 @@ from auth import (
     ROLE_LABELS, ROLE_HOME, TOKEN_HOURS,
 )
 from permissions import (
-    WORKPLACES, SCOPES, capability_catalog, unknown_capabilities,
-    normalize_scope, normalize_workplace, home_for,
+    WORKPLACES, SCOPES, CAPABILITIES, capability_catalog, unknown_capabilities,
+    normalize_scope, normalize_workplace, home_for, WORKFLOW_TRANSITIONS,
 )
 
 init_schema()
@@ -2170,6 +2170,35 @@ def add_task_status_history(
     )
 
 
+def load_workflow_permissions(conn) -> dict:
+    """Настроенные возможности переходов (только известные коды)."""
+    from permissions import WORKFLOW_TRANSITIONS
+
+    permissions_by_code = {}
+    for row in conn.execute(
+        "SELECT code, capabilities FROM workflow_transitions"
+    ).fetchall():
+        try:
+            codes = json.loads(row["capabilities"] or "[]")
+        except (TypeError, ValueError):
+            codes = []
+        valid = [c for c in codes if c in CAPABILITIES]
+        # Пустой/битый список = переход по умолчанию из каталога.
+        if not valid:
+            valid = [WORKFLOW_TRANSITIONS[row["code"]]["default_capability"]]
+        permissions_by_code[row["code"]] = valid
+    return permissions_by_code
+
+
+def ensure_transition_allowed(user: dict, permissions_by_code: dict, code: str) -> None:
+    allowed = permissions_by_code.get(code) or []
+    if not any(user_has(user, capability) for capability in allowed):
+        raise HTTPException(
+            status_code=403,
+            detail="У вашей роли нет прав на это действие",
+        )
+
+
 def set_task_workflow_status(
     conn,
     task,
@@ -2213,9 +2242,10 @@ def set_task_workflow_status(
 
 @app.post("/api/tasks/{task_id}/complete")
 def complete_task(task_id: int, request: Request):
-    user = require_capability(request, "task.complete")
+    user = get_current_user(request)
 
     with get_db() as conn:
+        ensure_transition_allowed(user, load_workflow_permissions(conn), "complete")
         task = get_task_for_workflow(conn, task_id)
 
         if task["workflow_status"] not in ("open", "rework"):
@@ -2257,9 +2287,12 @@ def complete_task(task_id: int, request: Request):
 
 @app.post("/api/tasks/{task_id}/approve")
 def approve_task(task_id: int, request: Request):
-    user = require_capability(request, "task.approve")
+    user = get_current_user(request)
 
     with get_db() as conn:
+        ensure_transition_allowed(
+            user, load_workflow_permissions(conn), "approve"
+        )
         task = get_task_for_workflow(conn, task_id)
         enforce_director_task_scope(user, task)
 
@@ -2300,9 +2333,12 @@ def approve_task(task_id: int, request: Request):
 
 @app.post("/api/tasks/{task_id}/rework")
 def rework_task(task_id: int, request: Request):
-    user = require_capability(request, "task.rework")
+    user = get_current_user(request)
 
     with get_db() as conn:
+        ensure_transition_allowed(
+            user, load_workflow_permissions(conn), "rework"
+        )
         task = get_task_for_workflow(conn, task_id)
         enforce_director_task_scope(user, task)
 
@@ -2346,9 +2382,12 @@ def rework_task(task_id: int, request: Request):
 
 @app.post("/api/tasks/{task_id}/close")
 def close_task(task_id: int, request: Request):
-    user = require_capability(request, "task.close")
+    user = get_current_user(request)
 
     with get_db() as conn:
+        ensure_transition_allowed(
+            user, load_workflow_permissions(conn), "close"
+        )
         task = get_task_for_workflow(conn, task_id)
         enforce_director_task_scope(user, task)
 
@@ -3450,6 +3489,84 @@ def admin_update_task_type(type_id: int, data: TaskTypeIn, request: Request):
         )
 
     return {"ok": True}
+
+
+# ---------- Переходы workflow ----------
+class WorkflowTransitionIn(BaseModel):
+    capabilities: List[str]
+
+
+@app.get("/api/admin/workflow")
+def admin_get_workflow(request: Request):
+    require_capability(request, "workflow.manage")
+    with get_db() as conn:
+        configured = load_workflow_permissions(conn)
+
+    transitions = []
+    for code, config in WORKFLOW_TRANSITIONS.items():
+        transitions.append(
+            {
+                "code": code,
+                "label": config["label"],
+                "from": list(config["from"]),
+                "from_label": ", ".join(
+                    TASK_WORKFLOW_STATUSES.get(status, status)
+                    for status in config["from"]
+                ),
+                "to": config["to"],
+                "to_label": TASK_WORKFLOW_STATUSES.get(config["to"], config["to"]),
+                "capabilities": configured.get(code) or [config["default_capability"]],
+                "default": config["default_capability"],
+            }
+        )
+
+    return {"transitions": transitions, "capabilities": capability_catalog()}
+
+
+@app.put("/api/admin/workflow/{code}")
+def admin_update_workflow_transition(code: str, data: WorkflowTransitionIn, request: Request):
+    user = require_capability(request, "workflow.manage")
+    if code not in WORKFLOW_TRANSITIONS:
+        raise HTTPException(status_code=404, detail="Переход не найден")
+
+    unknown = unknown_capabilities(data.capabilities or [])
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неизвестные возможности: {', '.join(unknown)}",
+        )
+    capabilities = sorted(set(data.capabilities or []))
+    if not capabilities:
+        raise HTTPException(
+            status_code=400,
+            detail="Добавьте хотя бы одну возможность или верните значение по умолчанию",
+        )
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT capabilities FROM workflow_transitions WHERE code = ?", (code,)
+        ).fetchone()
+        try:
+            before = json.loads(row["capabilities"] or "[]") if row else []
+        except (TypeError, ValueError):
+            before = []
+
+        conn.execute(
+            "UPDATE workflow_transitions SET capabilities = ? WHERE code = ?",
+            (json.dumps(capabilities, ensure_ascii=False), code),
+        )
+        write_audit(
+            conn,
+            user,
+            "workflow.update",
+            "workflow",
+            code,
+            before={"capabilities": before},
+            after={"capabilities": capabilities},
+            request=request,
+        )
+
+    return {"ok": True, "capabilities": capabilities}
 
 
 @app.get("/api/admin/users")

@@ -42,6 +42,7 @@ CAPABILITIES = {
     "entities.manage": ("admin", "Управлять юрлицами и доступом"),
     "roles.manage": ("admin", "Управлять ролями и возможностями"),
     "task_types.manage": ("tasks", "Управлять типами заданий"),
+    "workflow.manage": ("tasks", "Управлять переходами заданий"),
 }
 
 ALL_CAPABILITIES = tuple(sorted(CAPABILITIES))
@@ -131,6 +132,35 @@ SYSTEM_ROLES = {
         "scope": "entity",
         "capabilities": ("crew.report.moderate",),
         "home": "/head",
+    },
+}
+
+# Фиксированные переходы workflow: код, откуда, куда, подпись, возможность
+# по умолчанию. Список возможностей перехода редактируется в админке.
+WORKFLOW_TRANSITIONS = {
+    "complete": {
+        "from": ("open", "rework"),
+        "to": "pending_review",
+        "label": "Отправить на проверку",
+        "default_capability": "task.complete",
+    },
+    "approve": {
+        "from": ("pending_review",),
+        "to": "completed",
+        "label": "Принять задание",
+        "default_capability": "task.approve",
+    },
+    "rework": {
+        "from": ("pending_review",),
+        "to": "rework",
+        "label": "Вернуть на доработку",
+        "default_capability": "task.rework",
+    },
+    "close": {
+        "from": ("open", "pending_review", "rework"),
+        "to": "closed",
+        "label": "Закрыть задание",
+        "default_capability": "task.close",
     },
 }
 

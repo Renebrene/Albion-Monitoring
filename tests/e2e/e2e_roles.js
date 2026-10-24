@@ -720,6 +720,73 @@ try {
     await page.close();
   }
 
+  // ------------------------------------------------------------------
+  // 12. Переходы workflow: права настраиваются
+  // ------------------------------------------------------------------
+  {
+    const page = await newPage();
+    await login(page, "scope-admin", "/admin");
+    await page.selectOption("#entityScope", "__all__");
+    await page.waitForTimeout(2500);
+
+    await page.click("#settingsToggle");
+    await page.waitForSelector("#workflowSection", { state: "visible", timeout: 15000 });
+    await page.waitForTimeout(800);
+
+    const transitions = await page.locator("#workflowList .user-row").count();
+    assert.equal(transitions, 4, `ожидали 4 перехода, получили ${transitions}`);
+    pass("workflow transitions listed", `${transitions} transitions`);
+
+    // Сужаем complete: остаётся только task.approve.
+    const row = page.locator('[data-workflow-row="complete"]');
+    // Запоминаем: настройки прав переходов не зависят от выбранного юрлица.
+    await row.locator('[data-workflow-cap="complete:task.approve"]').check();
+    await row.locator('[data-workflow-cap="complete:task.complete"]').uncheck();
+    await row.locator('[data-workflow-save="complete"]').click();
+    await page.waitForTimeout(1200);
+
+    // Сессия в режиме «Все юрлица»: создание запрещено. Сужаем права перехода,
+    // затем создаём задание из конкретного юрлица и проверяем права у админа.
+    const narrowed = await page.evaluate(async () => {
+      const headers = {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + localStorage.getItem("token"),
+      };
+      const save = await fetch("/api/admin/workflow/complete", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ capabilities: ["task.approve"] }),
+      });
+      return save.status;
+    });
+    assert.equal(narrowed, 200, "не удалось сузить переход complete");
+
+    await page.selectOption("#entityScope", "1");
+    await page.waitForTimeout(2500);
+
+    const checks = await page.evaluate(async () => {
+      const headers = {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + localStorage.getItem("token"),
+      };
+      const create = await fetch("/api/tasks", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ address_id: 1, description: "wf-переход E2E" }),
+      });
+      const createdBody = await create.json();
+      const taskId = createdBody.task_id;
+      const complete = await fetch(`/api/tasks/${taskId}/complete`, {
+        method: "POST", headers,
+      });
+      return { taskId, create: create.status, createdBody, complete: complete.status };
+    });
+    assert.equal(checks.create, 200, `задание не создано: ${JSON.stringify(checks.createdBody).slice(0, 200)}`);
+    assert.equal(checks.complete, 200, "админ должен пройти переход");
+
+    await page.close();
+  }
+
   console.log(`\nRESULT ${results.filter(item => item.ok).length}/${results.length} passed`);
   await browser.close();
   if (results.some(item => !item.ok)) process.exit(1);

@@ -231,7 +231,7 @@ class ApplicationSmokeTests(unittest.TestCase):
             "Головная организация",
         )
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8])
         # v4: юрлицо у рабочих таблиц, общий признак адреса и членство.
         task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
         self.assertIn("legal_entity_id", task_columns)
@@ -299,6 +299,7 @@ class ApplicationSmokeTests(unittest.TestCase):
                     (5, "roles_and_capabilities"),
                     (6, "custom_role_codes"),
                     (7, "task_types"),
+                    (8, "workflow_transitions"),
                 ],
             )
             existing_task = conn.execute("SELECT workflow_status, created_by_role, is_important FROM tasks WHERE id=1").fetchone()
@@ -308,7 +309,7 @@ class ApplicationSmokeTests(unittest.TestCase):
         from database import init_schema
         init_schema()
         with get_db() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 7)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 8)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 4)
 
     def test_address_limit_is_bounded(self):
@@ -2204,3 +2205,145 @@ class RoleConstructorTests(unittest.TestCase):
                 conn.execute(
                     "DELETE FROM user_entities WHERE role = 'qa_assigned'"
                 )
+
+
+class WorkflowTests(unittest.TestCase):
+    """Конструктор переходов: права переходов настраиваются админом."""
+
+    PASSWORD = "Workflow-Pass-1"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        password_hash = hash_password(cls.PASSWORD)
+        with get_db() as conn:
+            conn.execute("DELETE FROM user_entities WHERE user_id IN (50, 51)")
+            conn.execute("DELETE FROM auth_sessions WHERE user_id IN (50, 51)")
+            conn.execute("DELETE FROM users WHERE id IN (50, 51)")
+            conn.execute(
+                "DELETE FROM reports WHERE user_id IN (50, 51) OR text LIKE 'wf-%'"
+            )
+            conn.execute(
+                """
+                INSERT INTO addresses (id, city, address_name, manufacturer,
+                                       legal_entity_id, shared)
+                VALUES (901, 'WF-город', 'WF-адрес', 'WF', 1, 0)
+                ON CONFLICT(id) DO UPDATE SET active = 1
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO users (id, login, password_hash, role, legal_entity_id)
+                VALUES (50, 'wf-admin', ?, 'admin', 1),
+                       (51, 'wf-worker', ?, 'service', 1)
+                """,
+                (password_hash, password_hash),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_entities (user_id, legal_entity_id, role, is_default)
+                VALUES (50, 1, 'admin', 1), (51, 1, 'service', 1)
+                """
+            )
+        cls.admin_headers = {"Authorization": f"Bearer {make_session_token(50, 'wf-admin', 'admin')}"}
+        cls.worker_headers = {"Authorization": f"Bearer {make_session_token(51, 'wf-worker', 'service')}"}
+
+    @classmethod
+    def tearDownClass(cls):
+        with get_db() as conn:
+            conn.execute("DELETE FROM media WHERE task_id IN (SELECT id FROM tasks WHERE description LIKE 'wf-%')")
+            conn.execute("DELETE FROM task_status_history WHERE task_id IN (SELECT id FROM tasks WHERE description LIKE 'wf-%')")
+            conn.execute("DELETE FROM comments WHERE task_id IN (SELECT id FROM tasks WHERE description LIKE 'wf-%')")
+            conn.execute("DELETE FROM tasks WHERE description LIKE 'wf-%'")
+            conn.execute("DELETE FROM user_entities WHERE user_id IN (50, 51)")
+            conn.execute("DELETE FROM auth_sessions WHERE user_id IN (50, 51)")
+            conn.execute("DELETE FROM users WHERE id IN (50, 51)")
+            conn.execute("DELETE FROM addresses WHERE id = 901")
+            conn.execute("DELETE FROM workflow_transitions WHERE code NOT IN ('complete', 'approve', 'rework', 'close')")
+            conn.execute("UPDATE workflow_transitions SET capabilities = '[]'")
+        cls.client.close()
+
+    def _create_task(self):
+        response = self.client.post(
+            "/api/tasks",
+            json={"address_id": 901, "description": "wf-задание"},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["task_id"]
+
+    def test_transitions_endpoint_lists_defaults(self):
+        data = self.client.get("/api/admin/workflow", headers=self.admin_headers).json()
+        codes = {item["code"] for item in data["transitions"]}
+        self.assertEqual(codes, {"complete", "approve", "rework", "close"})
+        complete = [item for item in data["transitions"] if item["code"] == "complete"][0]
+        self.assertEqual(complete["to"], "pending_review")
+        self.assertIn("task.complete", complete["capabilities"])
+
+    def test_transition_rights_are_enforced(self):
+        task_id = self._create_task()
+        try:
+            # Сервис по умолчанию может отправлять на проверку.
+            self.assertEqual(
+                self.client.post(
+                    f"/api/tasks/{task_id}/complete", headers=self.worker_headers
+                ).status_code,
+                200,
+            )
+
+            # Забираем у перехода complete права сервиса: остаётся только админ.
+            self.client.put(
+                "/api/admin/workflow/complete",
+                json={"capabilities": ["task.approve"]},
+                headers=self.admin_headers,
+            )
+
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE tasks SET workflow_status = 'open' WHERE id = ?", (task_id,)
+                )
+            self.assertEqual(
+                self.client.post(
+                    f"/api/tasks/{task_id}/complete", headers=self.worker_headers
+                ).status_code,
+                403,
+            )
+            # Админ всё ещё может — у него все возможности.
+            self.assertEqual(
+                self.client.post(
+                    f"/api/tasks/{task_id}/complete", headers=self.admin_headers
+                ).status_code,
+                200,
+            )
+
+            # Сброс: пустой список запрещён, возврат по умолчанию через каталог.
+            empty = self.client.put(
+                "/api/admin/workflow/complete",
+                json={"capabilities": []},
+                headers=self.admin_headers,
+            )
+            self.assertEqual(empty.status_code, 400)
+            unknown = self.client.put(
+                "/api/admin/workflow/complete",
+                json={"capabilities": ["nope.cap"]},
+                headers=self.admin_headers,
+            )
+            self.assertEqual(unknown.status_code, 400)
+        finally:
+            self.client.put(
+                "/api/admin/workflow/complete",
+                json={"capabilities": ["task.complete"]},
+                headers=self.admin_headers,
+            )
+
+    def test_workflow_manage_capability_gates_the_section(self):
+        self.assertEqual(
+            self.client.get("/api/admin/workflow", headers=self.worker_headers).status_code,
+            403,
+        )
+
+    def test_workflow_ui_is_wired(self):
+        html = (APP_DIR / "templates" / "admin.html").read_text(encoding="utf-8")
+        self.assertIn("workflowSection", html)
+        script = (APP_DIR / "static" / "admin-settings.js").read_text(encoding="utf-8")
+        self.assertIn("/api/admin/workflow", script)

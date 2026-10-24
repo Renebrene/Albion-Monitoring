@@ -807,6 +807,74 @@
     }
   }
 
+  // ---------- Переходы workflow ----------
+  async function loadWorkflow() {
+    const section = document.getElementById("workflowSection");
+    if (!section) return;
+
+    if (!isGroupScope()) {
+      section.style.display = "none";
+      return;
+    }
+
+    section.style.display = "";
+    const data = await API_SETTINGS("/api/admin/workflow");
+    renderWorkflow(data.transitions || [], data.capabilities || []);
+  }
+
+  function renderWorkflow(transitions, capabilities) {
+    const container = document.getElementById("workflowList");
+    if (!container) return;
+
+    const capabilityLabels = new Map(
+      capabilities.map(item => [item.code, item.description || item.code])
+    );
+
+    container.innerHTML = transitions.map(transition => `
+      <div class="user-row" data-workflow-row="${transition.code}">
+        <div class="user-main">
+          <div class="user-login">${escapeHtml(transition.label)}</div>
+          <div class="user-role">
+            ${escapeHtml(transition.from_label || transition.from.join(", "))} → ${escapeHtml(transition.to_label || transition.to)}
+          </div>
+          <div class="entity-editor-grid" style="margin-top:8px">
+            ${capabilities.map(item => `
+              <label style="font-size:13px">
+                <input type="checkbox"
+                  data-workflow-cap="${transition.code}:${item.code}"
+                  ${transition.capabilities.includes(item.code) ? "checked" : ""}>
+                ${escapeHtml(capabilityLabels.get(item.code) || item.code)}
+              </label>
+            `).join("")}
+          </div>
+        </div>
+        <button type="button" class="settings-create-btn" data-workflow-save="${transition.code}">Сохранить</button>
+      </div>
+    `).join("");
+
+    container.querySelectorAll("[data-workflow-save]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const code = button.dataset.workflowSave;
+        const row = container.querySelector(`[data-workflow-row="${code}"]`);
+        const selected = Array.from(
+          row.querySelectorAll(`[data-workflow-cap^="${code}:"]:checked`)
+        ).map(input => input.dataset.workflowCap.split(":")[1]);
+
+        try {
+          await API_SETTINGS(`/api/admin/workflow/${code}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ capabilities: selected })
+          });
+          setStatus("Переход сохранён");
+          setTimeout(() => setStatus(""), 1800);
+        } catch (err) {
+          setStatus(err.message || "Не удалось сохранить переход", true);
+        }
+      });
+    });
+  }
+
   let managedUsers = [];
 
   function renderManagedUsers(users) {
@@ -977,6 +1045,7 @@
       await loadEntities();
       await loadRoles();
       await loadTaskTypes();
+      await loadWorkflow();
       const users = await API_SETTINGS("/api/admin/users");
       renderManagedUsers(users);
       return;
