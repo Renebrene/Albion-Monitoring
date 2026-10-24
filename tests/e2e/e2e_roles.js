@@ -634,6 +634,92 @@ try {
     await page.close();
   }
 
+  // ------------------------------------------------------------------
+  // 11. Типы заданий: конструктор и доп. поля
+  // ------------------------------------------------------------------
+  {
+    const page = await newPage();
+    await login(page, "scope-admin", "/admin");
+    await page.selectOption("#entityScope", "__all__");
+    await page.waitForTimeout(2500);
+
+    await page.click("#settingsToggle");
+    await page.waitForSelector("#taskTypesSection", { state: "visible", timeout: 15000 });
+    await page.waitForTimeout(800);
+
+    // Форма создания типа: название, код и поле.
+    await page.fill("#newTaskTypeName", "Монтаж экрана");
+    await page.fill("#newTaskTypeCode", "e2e_mount");
+    await page.click("#addTypeFieldBtn");
+    const row = page.locator("#newTaskTypeFields [data-type-field-row]").first();
+    await row.locator('[data-field-prop="label"]').fill("Модель экрана");
+    await row.locator('[data-field-prop="key"]').fill("screen_model");
+    await row.locator('[data-field-prop="required"]').check();
+    await page.click("#createTaskTypeBtn");
+    await page.waitForTimeout(1500);
+
+    const created = page.locator("#taskTypesList .user-row").filter({ hasText: "Монтаж экрана" });
+    assert.equal(await created.count(), 1, "тип задания не создан");
+    pass("task type created from UI", "e2e_mount");
+
+    // Создание задания с доп. полем и проверка значений.
+    const typeId = await created.getAttribute("data-task-type-row");
+
+    // Создание заданий разрешено только в конкретном юрлице — выходим
+    // из сводного режима.
+    await page.selectOption("#entityScope", "1");
+    await page.waitForTimeout(2500);
+
+    const results = await page.evaluate(async taskTypeId => {
+      const headers = {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + localStorage.getItem("token"),
+      };
+      const create = await fetch("/api/tasks", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          address_id: 1,
+          description: "E2E задание с типом",
+          task_type: Number(taskTypeId),
+          extra_fields: { screen_model: "Abus 46" },
+        }),
+      });
+      const missing = await fetch("/api/tasks", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          address_id: 1,
+          description: "E2E без обязательного поля",
+          task_type: Number(taskTypeId),
+          extra_fields: {},
+        }),
+      });
+      const tasks = await fetch("/api/tasks?limit=50", { headers }).then(r => r.json());
+      const created_task = (tasks || []).find(item => item.description === "E2E задание с типом");
+      return {
+        create: create.status,
+        missing: missing.status,
+        task_type: created_task && created_task.task_type,
+        extra: created_task && created_task.extra_fields,
+      };
+    }, typeId);
+    assert.equal(results.create, 200, `создание: ${results.create}`);
+    assert.equal(results.missing, 400, `без обязательного поля должно быть 400: ${results.missing}`);
+    assert.equal(results.task_type, "Монтаж экрана", "тип в списке не отображается");
+    assert.deepEqual(results.extra, [{ label: "Модель экрана", value: "Abus 46" }], results.extra);
+    pass("task with type and extra fields", `${results.task_type}: ${JSON.stringify(results.extra)}`);
+
+    // В модалке создания типы подгружаются и рисуют поля.
+    await page.evaluate(() => openTaskModal());
+    await page.waitForTimeout(1200);
+    const typeOptions = await page.locator("#taskTypeSelect option").count();
+    assert.ok(typeOptions >= 2, `в модалке мало типов: ${typeOptions}`);
+    pass("type selector rendered in create modal", `${typeOptions} types`);
+    await page.evaluate(() => closeTaskModal());
+    await page.close();
+  }
+
   console.log(`\nRESULT ${results.filter(item => item.ok).length}/${results.length} passed`);
   await browser.close();
   if (results.some(item => !item.ok)) process.exit(1);

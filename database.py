@@ -1,4 +1,5 @@
 import contextvars
+import json
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -604,6 +605,34 @@ def _migration_6_custom_role_codes(conn):
 _migration_6_custom_role_codes.sqlite_rebuild = True
 
 
+def _migration_7_task_types(conn):
+    """Типы заданий: настраиваемые поля и привязка задач к типу."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS domains (
+            code TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS task_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain_code TEXT NOT NULL DEFAULT 'monitoring',
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            fields_schema TEXT NOT NULL DEFAULT '[]',
+            is_system INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    _add_column_if_missing(conn, "tasks", "task_type_id", "INTEGER REFERENCES task_types(id)")
+    _add_column_if_missing(conn, "tasks", "extra_fields", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_task_type ON tasks(task_type_id)"
+    )
+
+
 def _apply_schema_migrations(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -619,6 +648,7 @@ def _apply_schema_migrations(conn):
         (4, "entity_scope", _migration_4_entity_scope),
         (5, "roles_and_capabilities", _migration_5_roles_and_capabilities),
         (6, "custom_role_codes", _migration_6_custom_role_codes),
+        (7, "task_types", _migration_7_task_types),
     )
     for version, name, migration in migrations:
         applied = conn.execute(
@@ -784,6 +814,25 @@ def _init_sqlite_schema():
                 legal_entity_id INTEGER NOT NULL DEFAULT 1
             );
 
+            -- Домены приложения (слои) и типы заданий.
+            CREATE TABLE IF NOT EXISTS domains (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS task_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain_code TEXT NOT NULL DEFAULT 'monitoring'
+                    REFERENCES domains(code),
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                fields_schema TEXT NOT NULL DEFAULT '[]',
+                is_system INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- Справочник возможностей: синхронизируется из каталога в коде.
             CREATE TABLE IF NOT EXISTS capabilities (
                 code TEXT PRIMARY KEY,
@@ -809,6 +858,17 @@ def _init_sqlite_schema():
                 PRIMARY KEY (role_id, capability_code)
             );
 
+            CREATE TABLE IF NOT EXISTS task_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain_code TEXT NOT NULL DEFAULT 'monitoring',
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                fields_schema TEXT NOT NULL DEFAULT '[]',
+                is_system INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 address_id INTEGER NOT NULL REFERENCES addresses(id),
@@ -819,7 +879,9 @@ def _init_sqlite_schema():
                 closed_at DATETIME,
                 closed_by INTEGER REFERENCES users(id),
                 hidden INTEGER NOT NULL DEFAULT 0,
-                legal_entity_id INTEGER NOT NULL DEFAULT 1
+                legal_entity_id INTEGER NOT NULL DEFAULT 1,
+                task_type_id INTEGER REFERENCES task_types(id),
+                extra_fields TEXT
             );
 
             -- Настройки приложения (вкл/выкл фото, видео)
@@ -905,6 +967,42 @@ def _init_postgres_schema():
             )
 
 
+DEFAULT_TASK_DOMAIN = ("monitoring", "Мониторинг экранов")
+DEFAULT_TASK_TYPE = {
+    "code": "standard",
+    "name": "Обычное задание",
+    "fields_schema": [],
+}
+
+
+def sync_task_types():
+    """Домен и тип заданий по умолчанию: защищённый «Обычное задание»."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO domains (code, name) SELECT ?, ? "
+            "WHERE NOT EXISTS (SELECT 1 FROM domains WHERE code = ?)",
+            (DEFAULT_TASK_DOMAIN[0], DEFAULT_TASK_DOMAIN[1], DEFAULT_TASK_DOMAIN[0]),
+        )
+        conn.execute(
+            """
+            INSERT INTO task_types (domain_code, code, name, fields_schema, is_system, active)
+            SELECT ?, ?, ?, ?, 1, 1
+            WHERE NOT EXISTS (SELECT 1 FROM task_types WHERE code = ?)
+            """,
+            (
+                DEFAULT_TASK_DOMAIN[0],
+                DEFAULT_TASK_TYPE["code"],
+                DEFAULT_TASK_TYPE["name"],
+                json.dumps(DEFAULT_TASK_TYPE["fields_schema"]),
+                DEFAULT_TASK_TYPE["code"],
+            ),
+        )
+        conn.execute(
+            "UPDATE task_types SET is_system = 1, active = 1 WHERE code = ?",
+            (DEFAULT_TASK_TYPE["code"],),
+        )
+
+
 def init_schema():
     if DB_BACKEND == "postgres":
         _init_postgres_schema()
@@ -912,6 +1010,7 @@ def init_schema():
         _init_sqlite_schema()
 
     sync_permissions()
+    sync_task_types()
 
 
 def sync_permissions():

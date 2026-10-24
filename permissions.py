@@ -41,6 +41,7 @@ CAPABILITIES = {
     "users.manage": ("users", "Управлять пользователями"),
     "entities.manage": ("admin", "Управлять юрлицами и доступом"),
     "roles.manage": ("admin", "Управлять ролями и возможностями"),
+    "task_types.manage": ("tasks", "Управлять типами заданий"),
 }
 
 ALL_CAPABILITIES = tuple(sorted(CAPABILITIES))

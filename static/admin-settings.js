@@ -601,6 +601,212 @@
     }
   }
 
+  // ---------- Типы заданий ----------
+  const taskTypesState = { loaded: false, types: [] };
+  const TASK_FIELD_TYPES = [
+    ["text", "текст"],
+    ["number", "число"],
+    ["date", "дата"],
+    ["select", "список"],
+  ];
+
+  async function loadTaskTypes() {
+    const section = document.getElementById("taskTypesSection");
+    if (!section) return;
+
+    if (!isGroupScope()) {
+      section.style.display = "none";
+      return;
+    }
+
+    section.style.display = "";
+    taskTypesState.types = await API_SETTINGS("/api/admin/task-types");
+    taskTypesState.loaded = true;
+    renderTaskTypes(taskTypesState.types);
+  }
+
+  function taskFieldRow(field = {}) {
+    const options = (field.options || []).join(", ");
+    return `
+      <div class="entity-inline-form" data-type-field-row>
+        <input type="text" data-field-prop="label" placeholder="Подпись" value="${escapeHtml(field.label || "")}" style="min-width:150px">
+        <input type="text" data-field-prop="key" placeholder="ключ" value="${escapeHtml(field.key || "")}" style="width:110px">
+        <select data-field-prop="type">
+          ${TASK_FIELD_TYPES.map(
+            ([value, label]) =>
+              `<option value="${value}" ${value === (field.type || "text") ? "selected" : ""}>${label}</option>`
+          ).join("")}
+        </select>
+        <input type="text" data-field-prop="options" placeholder="варианты через запятую" value="${escapeHtml(options)}" style="min-width:150px">
+        <label style="white-space:nowrap"><input type="checkbox" data-field-prop="required"> обязательное</label>
+        <button type="button" class="user-password-btn" data-remove-field>−</button>
+      </div>
+    `;
+  }
+
+  function collectTaskTypeFields(container) {
+    const fields = [];
+    container.querySelectorAll("[data-type-field-row]").forEach(row => {
+      const field = {
+        label: row.querySelector('[data-field-prop="label"]').value.trim(),
+        key: row.querySelector('[data-field-prop="key"]').value.trim(),
+        type: row.querySelector('[data-field-prop="type"]').value,
+        required: row.querySelector('[data-field-prop="required"]').checked,
+        options: (row.querySelector('[data-field-prop="options"]').value || "")
+          .split(",").map(item => item.trim()).filter(Boolean),
+      };
+      if (field.label || field.key) fields.push(field);
+    });
+    return fields;
+  }
+
+  function renderTaskTypes(types) {
+    const container = document.getElementById("taskTypesList");
+    if (!container) return;
+
+    if (!types.length) {
+      container.innerHTML = '<div class="users-empty">Типы не найдены</div>';
+      return;
+    }
+
+    container.innerHTML = types.map(type => {
+      const fieldsInfo = (type.fields || []).map(item => item.label).join(", ");
+      return `
+      <div class="user-row" data-task-type-row="${type.id}">
+        <div class="user-main">
+          <div class="user-login">
+            ${escapeHtml(type.name)}
+            ${type.is_system ? '<span class="entity-badge">системный</span>' : ""}
+            ${type.active ? "" : '<span class="entity-badge off">выключен</span>'}
+          </div>
+          <div class="user-role">
+            ${escapeHtml(type.code)} · полей: ${(type.fields || []).length}
+            ${fieldsInfo ? " · " + escapeHtml(fieldsInfo) : ""}
+            · заданий: ${type.tasks}
+          </div>
+        </div>
+        <div class="user-actions">
+          <button type="button" class="user-password-btn" data-task-type-edit="${type.id}">Изменить</button>
+          <button type="button" class="user-password-btn" data-task-type-toggle="${type.id}">
+            ${type.active ? "Выключить" : "Включить"}
+          </button>
+        </div>
+      </div>`;
+    }).join("");
+
+    container.querySelectorAll("[data-task-type-toggle]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const type = taskTypesState.types.find(item => item.id === Number(button.dataset.taskTypeToggle));
+        if (!type) return;
+        try {
+          await API_SETTINGS(`/api/admin/task-types/${type.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: type.name,
+              fields: type.fields,
+              active: !type.active
+            })
+          });
+          await loadTaskTypes();
+          setStatus("Тип задания обновлён");
+          setTimeout(() => setStatus(""), 1800);
+        } catch (err) {
+          setStatus(err.message || "Не удалось изменить тип", true);
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-task-type-edit]").forEach(button => {
+      button.addEventListener("click", () => openTaskTypeEditor(Number(button.dataset.taskTypeEdit)));
+    });
+  }
+
+  function openTaskTypeEditor(typeId) {
+    const type = taskTypesState.types.find(item => item.id === typeId);
+    const row = document.querySelector(`[data-task-type-row="${typeId}"]`);
+    if (!type || !row) return;
+    if (row.querySelector(".entity-editor")) {
+      row.querySelector(".entity-editor").remove();
+      return;
+    }
+
+    const fieldsEditable = (type.tasks || 0) === 0;
+    const editor = document.createElement("div");
+    editor.className = "entity-editor";
+    editor.innerHTML = `
+      <div class="entity-inline-form">
+        <input type="text" id="taskTypeNameEdit" value="${escapeHtml(type.name)}" placeholder="Название">
+      </div>
+      ${fieldsEditable ? `
+        <div class="entity-editor-grid" id="taskTypeFieldsEdit">
+          ${(type.fields || []).map(field => taskFieldRow(field)).join("")}
+        </div>
+        <button type="button" class="user-password-btn" id="taskTypeFieldAddEdit">+ добавить поле</button>
+      ` : `<div class="user-role">Тип используется в заданиях: состав полей менять нельзя</div>`}
+      <div class="entity-editor-actions">
+        <button type="button" class="settings-create-btn" id="taskTypeSaveEdit">Сохранить</button>
+        <button type="button" class="user-password-btn" id="taskTypeCancelEdit">Отмена</button>
+      </div>
+    `;
+    row.appendChild(editor);
+
+    editor.querySelector("#taskTypeCancelEdit").addEventListener("click", () => editor.remove());
+    if (fieldsEditable) {
+      editor.querySelector("#taskTypeFieldAddEdit").addEventListener("click", () => {
+        const grid = editor.querySelector("#taskTypeFieldsEdit");
+        grid.insertAdjacentHTML("beforeend", taskFieldRow({}));
+      });
+    }
+    editor.querySelector("#taskTypeSaveEdit").addEventListener("click", async () => {
+      try {
+        await API_SETTINGS(`/api/admin/task-types/${typeId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: editor.querySelector("#taskTypeNameEdit").value,
+            fields:
+              fieldsEditable
+                ? collectTaskTypeFields(editor.querySelector("#taskTypeFieldsEdit"))
+                : type.fields
+          })
+        });
+        await loadTaskTypes();
+        setStatus("Тип задания сохранён");
+        setTimeout(() => setStatus(""), 1800);
+      } catch (err) {
+        setStatus(err.message || "Не удалось сохранить тип", true);
+      }
+    });
+  }
+
+  async function createTaskType() {
+    const name = document.getElementById("newTaskTypeName");
+    const code = document.getElementById("newTaskTypeCode");
+    const fieldsContainer = document.getElementById("newTaskTypeFields");
+    if (!name || !code || !fieldsContainer) return;
+
+    try {
+      await API_SETTINGS("/api/admin/task-types", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.value,
+          code: code.value,
+          fields: collectTaskTypeFields(fieldsContainer)
+        })
+      });
+      name.value = "";
+      code.value = "";
+      fieldsContainer.innerHTML = "";
+      await loadTaskTypes();
+      setStatus("Тип задания создан");
+      setTimeout(() => setStatus(""), 1800);
+    } catch (err) {
+      setStatus(err.message || "Не удалось создать тип", true);
+    }
+  }
+
   let managedUsers = [];
 
   function renderManagedUsers(users) {
@@ -770,6 +976,7 @@
     if (isGroupScope()) {
       await loadEntities();
       await loadRoles();
+      await loadTaskTypes();
       const users = await API_SETTINGS("/api/admin/users");
       renderManagedUsers(users);
       return;
@@ -1011,6 +1218,16 @@
 
     const createRoleButton = document.getElementById("createRoleBtn");
     if (createRoleButton) createRoleButton.addEventListener("click", createRole);
+
+    const createTaskTypeButton = document.getElementById("createTaskTypeBtn");
+    if (createTaskTypeButton) createTaskTypeButton.addEventListener("click", createTaskType);
+
+    const addTypeFieldButton = document.getElementById("addTypeFieldBtn");
+    if (addTypeFieldButton) {
+      addTypeFieldButton.addEventListener("click", () => {
+        document.getElementById("newTaskTypeFields")?.insertAdjacentHTML("beforeend", taskFieldRow({}));
+      });
+    }
 
     // Переключатель юрлица перезагружает страницу, поэтому режим узнаём заново
     // после каждого открытия панели.

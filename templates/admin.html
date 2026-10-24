@@ -1404,6 +1404,33 @@
 
   </div>
 
+  <div class="settings-section" id="taskTypesSection" style="display:none">
+
+    <div class="settings-section-title">
+      ТИПЫ ЗАДАНИЙ
+    </div>
+
+    <p class="settings-help">
+      Тип задаёт дополнительные поля в форме создания. Статусы и порядок работы
+      единые; у типа со заданиями менять состав полей нельзя — создайте новый.
+    </p>
+
+    <div id="taskTypesList" class="users-list"></div>
+
+    <div class="settings-subtitle">
+      НОВЫЙ ТИП ЗАДАНИЯ
+    </div>
+
+    <div class="new-user-form">
+      <input type="text" id="newTaskTypeName" placeholder="Название" autocomplete="off">
+      <input type="text" id="newTaskTypeCode" placeholder="Код (латиницей)" autocomplete="off">
+      <div id="newTaskTypeFields" class="entity-editor-grid"></div>
+      <button type="button" class="user-password-btn" id="addTypeFieldBtn">+ добавить поле</button>
+      <button type="button" class="settings-create-btn" id="createTaskTypeBtn">Создать тип</button>
+    </div>
+
+  </div>
+
   <div class="settings-section">
 
     <div class="settings-section-title">
@@ -1877,6 +1904,11 @@
         <input type="checkbox" id="taskImportant">
         <span>Важное задание</span>
       </label>
+
+      <label for="taskTypeSelect">Тип задания</label>
+
+      <select id="taskTypeSelect" style="display:none"></select>
+      <div id="taskTypeFields" class="entity-editor-grid"></div>
 
       <label for="taskDescription">
         Задание
@@ -2843,6 +2875,7 @@
 
 </style>
 <script src="/static/auth.js?v=5"></script>
+<script src="/static/task_types_ui.js?v=1"></script>
 <script src="/static/entity_scope.js?v=1"></script>
 <script src="/static/filter_state.js?v=1"></script>
 <script src="/static/media.js?v=2"></script>

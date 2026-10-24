@@ -16,7 +16,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Union
 from io import BytesIO
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
@@ -29,6 +29,7 @@ from PIL import Image
 from database import (
     get_db, init_schema, set_tenant_context, apply_tenant_settings,
     UPLOADS_DIR, PRIVATE_MEDIA_DIR, get_setting, set_setting,
+    DEFAULT_TASK_DOMAIN, DEFAULT_TASK_TYPE,
 )
 from auth import (
     hash_password, verify_password, create_token, token_fingerprint,
@@ -58,6 +59,36 @@ def parent_entity_id(conn, table: str, row_id):
     if not row:
         return None
     return int(row["legal_entity_id"] or 1)
+
+
+def task_type_schemas(conn) -> dict:
+    """Схемы доп. полей по id типа задания."""
+    rows = conn.execute(
+        "SELECT id, name, fields_schema FROM task_types"
+    ).fetchall()
+    schemas = {}
+    for row in rows:
+        try:
+            fields = json.loads(row["fields_schema"] or "[]")
+        except (TypeError, ValueError):
+            fields = []
+        schemas[row["id"]] = {"name": row["name"], "fields": fields}
+    return schemas
+
+
+def format_extra_fields(field_definitions, raw) -> list:
+    """Доп. поля задачи в виде [{label, value}] для карточки."""
+    values = decode_extra_fields(raw)
+    if not field_definitions or not values:
+        return []
+    result = []
+    for item in field_definitions:
+        value = values.get(item.get("key"))
+        if value not in (None, ""):
+            result.append(
+                {"label": item.get("label") or item.get("key"), "value": value}
+            )
+    return result
 
 
 def own_scope_clause(user: dict, column: str):
@@ -542,6 +573,8 @@ class TaskIn(BaseModel):
     address_id: int
     description: str
     is_important: bool = False
+    task_type: Optional[Union[str, int]] = None
+    extra_fields: Optional[dict] = None
 
 
 class SettingIn(BaseModel):
@@ -1697,11 +1730,39 @@ def create_task(data: TaskIn, request: Request):
 
         entity_id = require_entity_scope(user)
 
+        # Тип задания: код опционален, значение по умолчанию — «Обычное задание».
+        task_type_id = None
+        extra_values = getattr(data, "extra_fields", None)
+        if getattr(data, "task_type", None):
+            type_row = conn.execute(
+                "SELECT id, code, name, fields_schema, active FROM task_types "
+                "WHERE code = ? OR id = ?",
+                (str(data.task_type), data.task_type if isinstance(data.task_type, int) else -1),
+            ).fetchone()
+            if not type_row or not type_row["active"]:
+                raise HTTPException(status_code=400, detail="Тип задания недоступен")
+            task_type_id = type_row["id"]
+        elif extra_values:
+            type_row = conn.execute(
+                "SELECT id, code, name, fields_schema FROM task_types WHERE code = ?",
+                (DEFAULT_TASK_TYPE["code"],),
+            ).fetchone()
+            task_type_id = type_row["id"] if type_row else None
+
+        extra_fields_json = parse_extra_fields(
+            conn.execute(
+                "SELECT fields_schema FROM task_types WHERE id = ?", (task_type_id,)
+            ).fetchone() if task_type_id else None,
+            extra_values,
+            strict=True,
+        ) if task_type_id else None
+
         cursor = conn.execute(
             """INSERT INTO tasks
                (address_id, created_by, created_by_role,
-                description, is_important, workflow_status, legal_entity_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                description, is_important, workflow_status, legal_entity_id,
+                task_type_id, extra_fields)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.address_id,
                 user["sub"],
@@ -1710,6 +1771,8 @@ def create_task(data: TaskIn, request: Request):
                 1 if data.is_important else 0,
                 "open",
                 entity_id,
+                task_type_id,
+                extra_fields_json,
             ),
         )
 
@@ -1895,10 +1958,12 @@ def list_tasks(
         status = "open"
 
     with get_db() as conn:
+        schemas_by_id = task_type_schemas(conn)
         sql = """
             SELECT t.id, t.description, t.status, t.created_at, t.closed_at,
                    t.is_important, t.close_reason,
                    t.created_by_role, t.workflow_status,
+                   t.extra_fields, t.task_type_id, tt.name AS task_type_name,
                    a.city, a.address_name, a.manufacturer,
                    u.login AS author,
                    cu.login AS closed_by_login
@@ -1906,6 +1971,7 @@ def list_tasks(
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
             LEFT JOIN users cu ON cu.id = t.closed_by
+            LEFT JOIN task_types tt ON tt.id = t.task_type_id
             WHERE t.hidden = 0
         """
         params: list = []
@@ -1997,6 +2063,11 @@ def list_tasks(
 
         for row in rows:
             task = dict(row)
+            task["task_type"] = row["task_type_name"] or "Обычное задание"
+            task["extra_fields"] = format_extra_fields(
+                (schemas_by_id.get(task.get("task_type_id")) or {}).get("fields"),
+                row["extra_fields"],
+            )
             task["media"] = media_by_task.get(task["id"], [])
             task["comments"] = sorted(
                 comments_by_task.get(task["id"], []),
@@ -3086,6 +3157,279 @@ def admin_update_role(role_id: int, data: RoleIn, request: Request):
     return {"ok": True}
 
 
+# ---------- Типы заданий ----------
+FIELD_TYPES = ("text", "number", "date", "select")
+FIELDS_LIMIT = 5
+
+
+class TaskTypeField(BaseModel):
+    key: str
+    label: str
+    type: str = "text"
+    options: List[str] = []
+    required: bool = False
+
+
+class TaskTypeIn(BaseModel):
+    code: Optional[str] = None
+    name: str
+    fields: List[TaskTypeField] = []
+    active: Optional[bool] = None
+
+
+def normalize_fields_schema(fields: List[TaskTypeField]):
+    """Проверяет и нормализует набор доп. полей типа задания."""
+    result = []
+    seen = set()
+    if len(fields) > FIELDS_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Не больше {FIELDS_LIMIT} дополнительных полей",
+        )
+    for item in fields:
+        key = (item.key or "").strip().lower().replace(" ", "_")
+        label = (item.label or "").strip()
+        if not key or not re.match(r"^[a-zа-я0-9_]{1,40}$", key, re.IGNORECASE):
+            raise HTTPException(status_code=400, detail=f"Некорректный ключ поля: {key!r}")
+        if key in seen:
+            raise HTTPException(status_code=400, detail=f"Дублирующийся ключ поля: {key}")
+        if not label:
+            raise HTTPException(status_code=400, detail=f"У поля {key} нет подписи")
+        if item.type not in FIELD_TYPES:
+            raise HTTPException(status_code=400, detail=f"Неизвестный тип поля: {item.type}")
+        options = [option.strip() for option in (item.options or []) if option.strip()]
+        if item.type == "select" and not options:
+            raise HTTPException(
+                status_code=400, detail=f"У списка {key} нет вариантов"
+            )
+        seen.add(key)
+        result.append(
+            {
+                "key": key,
+                "label": label,
+                "type": item.type,
+                "options": options,
+                "required": bool(item.required),
+            }
+        )
+    return result
+
+
+def parse_extra_fields(task_type_row, raw_values, strict: bool):
+    """Приводит значения доп. полей к типам; возвращает JSON-строку или None."""
+    if not task_type_row:
+        return None
+    try:
+        schema = json.loads(task_type_row["fields_schema"] or "[]")
+    except (TypeError, ValueError):
+        schema = []
+    if not schema:
+        return None
+
+    values = raw_values if isinstance(raw_values, dict) else {}
+    result = {}
+    for item in schema:
+        key = item["key"]
+        value = values.get(key)
+        if value in (None, ""):
+            if item.get("required") and strict:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Заполните поле «{item['label']}»",
+                )
+            continue
+        if item["type"] == "number":
+            try:
+                value = float(value) if not isinstance(value, (int, float)) else value
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Поле «{item['label']}» должно быть числом",
+                )
+            if float(value) == int(float(value)):
+                value = int(float(value))
+        elif item["type"] == "date":
+            try:
+                datetime.strptime(str(value), "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Поле «{item['label']}» должно быть датой ГГГГ-ММ-ДД",
+                )
+        elif item["type"] == "select" and str(value) not in item["options"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Поле «{item['label']}»: недопустимое значение",
+            )
+        result[key] = value
+
+    return json.dumps(result, ensure_ascii=False) if result else None
+
+
+def encode_extra_fields(values) -> str:
+    return json.dumps(values, ensure_ascii=False)
+
+
+def decode_extra_fields(raw) -> dict:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+@app.get("/api/task-types")
+def list_task_types(request: Request):
+    """Активные типы заданий — для формы создания и фильтров."""
+    get_current_user(request)
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, code, name, fields_schema
+            FROM task_types
+            WHERE active = 1
+            ORDER BY is_system DESC, name
+            """
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "code": row["code"],
+            "name": row["name"],
+            "fields": json.loads(row["fields_schema"] or "[]"),
+        }
+        for row in rows
+    ]
+
+
+@app.get("/api/admin/task-types")
+def admin_list_task_types(request: Request):
+    require_capability(request, "task_types.manage")
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, code, name, fields_schema, is_system, active,
+                   (SELECT COUNT(*) FROM tasks t WHERE t.task_type_id = task_types.id) AS tasks
+            FROM task_types
+            ORDER BY is_system DESC, name
+            """
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "code": row["code"],
+            "name": row["name"],
+            "fields": json.loads(row["fields_schema"] or "[]"),
+            "is_system": bool(row["is_system"]),
+            "active": bool(row["active"]),
+            "tasks": row["tasks"],
+        }
+        for row in rows
+    ]
+
+
+def _task_type_payload(data: TaskTypeIn, existing_code=None):
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите название типа задания")
+    code = (data.code or existing_code or "").strip().lower().replace(" ", "_")
+    if not re.match(r"^[a-z][a-z0-9_]{1,31}$", code):
+        raise HTTPException(
+            status_code=400,
+            detail="Код типа: латиница, цифры и подчёркивание, начинается с буквы",
+        )
+    return code, name, normalize_fields_schema(data.fields or [])
+
+
+@app.post("/api/admin/task-types")
+def admin_create_task_type(data: TaskTypeIn, request: Request):
+    user = require_capability(request, "task_types.manage")
+    code, name, fields = _task_type_payload(data)
+
+    with get_db() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM task_types WHERE code = ?", (code,)
+        ).fetchone()
+        if exists:
+            raise HTTPException(status_code=400, detail="Тип с таким кодом уже есть")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO task_types (domain_code, code, name, fields_schema, is_system, active)
+            VALUES (?, ?, ?, ?, 0, 1)
+            """,
+            (DEFAULT_TASK_DOMAIN[0], code, name, json.dumps(fields, ensure_ascii=False)),
+        )
+        write_audit(
+            conn,
+            user,
+            "task_type.create",
+            "task_type",
+            code,
+            after={"name": name, "fields": fields},
+            request=request,
+        )
+
+    return {"ok": True, "id": cursor.lastrowid, "code": code}
+
+
+@app.put("/api/admin/task-types/{type_id}")
+def admin_update_task_type(type_id: int, data: TaskTypeIn, request: Request):
+    user = require_capability(request, "task_types.manage")
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT id, code, name, fields_schema, is_system, active
+            FROM task_types WHERE id = ?
+            """,
+            (type_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Тип не найден")
+
+        code, name, fields = _task_type_payload(data, existing_code=row["code"])
+        active = int(row["active"]) if data.active is None else (1 if data.active else 0)
+
+        before_fields = json.loads(row["fields_schema"] or "[]")
+        assigned = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE task_type_id = ?", (type_id,)
+        ).fetchone()[0]
+        if assigned and fields != before_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Тип уже используется в {assigned} задани(и/ях): "
+                    "состав полей менять нельзя — создайте новый тип"
+                ),
+            )
+
+        before = {"name": row["name"], "active": bool(row["active"])}
+        conn.execute(
+            """
+            UPDATE task_types
+            SET name = ?, active = ?
+            WHERE id = ?
+            """,
+            (name, active, type_id),
+        )
+        write_audit(
+            conn,
+            user,
+            "task_type.update",
+            "task_type",
+            row["code"],
+            before=before,
+            after={"name": name, "active": bool(active), "fields": fields},
+            request=request,
+        )
+
+    return {"ok": True}
+
+
 @app.get("/api/admin/users")
 def admin_list_users(request: Request):
     """Пользователи с членством по юрлицам — для управления доступом."""
@@ -3889,10 +4233,14 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
         # =========================================================
         # 1. ЗАДАНИЯ
         # =========================================================
+        task_type_schemas_by_id = task_type_schemas(conn)
         tasks = conn.execute(f"""
             SELECT
                 t.id,
                 t.address_id,
+                t.extra_fields,
+                t.task_type_id,
+                tt.name AS task_type_name,
                 t.description AS text,
                 t.created_at,
                 a.city,
@@ -3908,6 +4256,7 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
             FROM tasks t
             JOIN addresses a ON a.id = t.address_id
             JOIN users u ON u.id = t.created_by
+            LEFT JOIN task_types tt ON tt.id = t.task_type_id
             WHERE t.hidden = 0{task_scope_sql}
             ORDER BY t.created_at DESC
             LIMIT ?
@@ -3936,6 +4285,11 @@ def get_unified_feed(request: Request, limit: int = 100, offset: int = 0):
                 ),
                 "is_important": bool(task["is_important"]),
                 "close_reason": task["close_reason"],
+                "task_type": task["task_type_name"] or "Обычное задание",
+                "extra_fields": format_extra_fields(
+                    (task_type_schemas_by_id.get(task["task_type_id"]) or {}).get("fields"),
+                    task["extra_fields"],
+                ),
                 "media": [],
                 "messages": [],
                 "director_comments": []

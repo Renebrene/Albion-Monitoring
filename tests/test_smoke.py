@@ -231,7 +231,7 @@ class ApplicationSmokeTests(unittest.TestCase):
             "Головная организация",
         )
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
+        self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7])
         # v4: юрлицо у рабочих таблиц, общий признак адреса и членство.
         task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
         self.assertIn("legal_entity_id", task_columns)
@@ -298,6 +298,7 @@ class ApplicationSmokeTests(unittest.TestCase):
                     (4, "entity_scope"),
                     (5, "roles_and_capabilities"),
                     (6, "custom_role_codes"),
+                    (7, "task_types"),
                 ],
             )
             existing_task = conn.execute("SELECT workflow_status, created_by_role, is_important FROM tasks WHERE id=1").fetchone()
@@ -307,7 +308,7 @@ class ApplicationSmokeTests(unittest.TestCase):
         from database import init_schema
         init_schema()
         with get_db() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 6)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 7)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 4)
 
     def test_address_limit_is_bounded(self):

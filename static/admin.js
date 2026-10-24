@@ -374,6 +374,17 @@ const toast = message => {
   clearTimeout(el._timer);
 
   el._timer = setTimeout(() => {
+
+window.taskTypeExtrasHtml = item => {
+  if (!item || !Array.isArray(item.extra_fields) || !item.extra_fields.length) return "";
+  const rows = item.extra_fields
+    .map(field => `<div style="font-size:13px;color:var(--muted, #6b7280)"><b>${esc(field.label)}:</b> ${esc(field.value)}</div>`)
+    .join("");
+  const type = item.task_type && item.task_type !== "Обычное задание"
+    ? `<div style="font-size:12px;color:var(--muted, #6b7280);margin-top:4px">${esc(item.task_type)}</div>`
+    : "";
+  return `<div style="margin-top:6px">${type}${rows}</div>`;
+};
     el.style.display = "none";
   }, 2500);
 };
@@ -802,7 +813,7 @@ const taskActionsHtml =
         <div class="feed-details">
 
           ${isTask
-            ? `<div class="task-description">${esc(item.text || "").replace(/\n/g, "<br>")}</div>`
+            ? `<div class="task-description">${esc(item.text || "").replace(/\n/g, "<br>")}${window.taskTypeExtrasHtml ? window.taskTypeExtrasHtml(item) : ""}</div>`
             : ''}
 
           ${mediaCount
@@ -1544,12 +1555,33 @@ const resolveTaskAddress = () => {
 };
 
 
+window.TaskTypesUIWire = async () => {
+  if (window.TaskTypesUI) {
+    await window.TaskTypesUI.render("taskTypeSelect", "taskTypeFields");
+  }
+};
+
+window.TaskTypesUIPayload = () => {
+  if (!window.TaskTypesUI) return {};
+  const error = window.TaskTypesUI.validate();
+  if (error) {
+    alert(error);
+    return { error };
+  }
+  return window.TaskTypesUI.collect() || {};
+};
+
+window.TaskTypesUIReset = () => {
+  if (window.TaskTypesUI) window.TaskTypesUI.reset("taskTypeSelect", "taskTypeFields");
+};
+
 window.openTaskModal = async () => {
   const modal = document.getElementById("taskModal");
 
   if(!modal) return;
 
   modal.classList.add("show");
+  if (window.TaskTypesUIWire) await window.TaskTypesUIWire();
 
   const city = document.getElementById("taskCity");
   const address = document.getElementById("taskAddressName");
@@ -1576,6 +1608,7 @@ window.openTaskModal = async () => {
 
 
 window.closeTaskModal = () => {
+  if (window.TaskTypesUIReset) window.TaskTypesUIReset();
   const modal = document.getElementById("taskModal");
 
   if(modal) {
@@ -1648,7 +1681,8 @@ window.createDirectorTask = async () => {
       body: JSON.stringify({
         address_id: Number(addressId.value),
         description: description.value.trim(),
-        is_important: Boolean(important?.checked)
+        is_important: Boolean(important?.checked),
+        ...(window.TaskTypesUIPayload ? window.TaskTypesUIPayload() : {})
       })
     });
 
